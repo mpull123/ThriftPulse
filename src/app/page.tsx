@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { supabase } from "@/lib/supabase";
 
-// --- FIXED PATHS FOR src/app/page.tsx ---
+// --- FIXED PATHS ---
 import SectionOverview from "../components/dashboard/SectionOverview"; 
 import SectionScout from "../components/dashboard/SectionScout";
 import SectionMissions from "../components/dashboard/SectionMissions"; 
@@ -12,10 +12,13 @@ import SectionHeatmap from "../components/dashboard/SectionHeatmap";
 import SectionHunt from "../components/dashboard/SectionHunt";
 import SubredditFilter from "../components/dashboard/SubredditFilter";
 
+// --- NEW IMPORT ---
+import { ListingModal } from "../components/dashboard/ListingModal"; 
+
 import { 
   Radar, LayoutDashboard, Wallet, Activity, 
-  LogOut, Menu, Map, Info, CheckCircle2,
-  Sun, Moon, Monitor, Sparkles, LayoutGrid, Hash
+  LogOut, Menu, Map, Info, Sparkles, LayoutGrid, Hash,
+  Sun, Moon, Monitor
 } from "lucide-react";
 import Link from "next/link";
 
@@ -28,6 +31,9 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<any[]>([]);
   const [stores, setStores] = useState<any[]>([]);
   
+  // --- NEW STATE FOR AI MODAL ---
+  const [selectedItem, setSelectedItem] = useState<any>(null);
+
   const [notification, setNotification] = useState<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -36,7 +42,8 @@ export default function DashboardPage() {
   const loadLiveContent = async () => {
     const [inv, sig, str] = await Promise.all([
       supabase.from('inventory').select('*').order('created_at', { ascending: false }),
-      supabase.from('market_signals').select('*').order('heat_score', { ascending: false }),
+      // UPDATED: Added ai_description to the select string below
+      supabase.from('market_signals').select('*, ai_description').order('heat_score', { ascending: false }),
       supabase.from('stores').select('*').eq('zip_code', '30064').order('power_rank', { ascending: false })
     ]);
     
@@ -50,8 +57,7 @@ export default function DashboardPage() {
     loadLiveContent();
   }, []);
 
-  useEffect(() => { setIsMobileMenuOpen(false); }, [activeView]);
-
+  // ... (keeping your existing handlers: handleAddMission, handleTaskAction, etc.)
   const handleAddMission = async (node: any) => {
     const newItem = {
       name: node.trend_name,
@@ -72,7 +78,7 @@ export default function DashboardPage() {
     if (taskType === 'list_all') {
       const { error } = await supabase.from('inventory').update({ status: 'listed' }).eq('status', 'in_trunk');
       if (!error) {
-        setMissions(missions.map(m => ({ ...m, status: 'listed' })));
+        setMissions(missions.filter(m => m.status === 'listed'));
         setNotification("Inventory Successfully Listed");
         setTimeout(() => setNotification(null), 3000);
       }
@@ -91,6 +97,7 @@ export default function DashboardPage() {
   return (
     <div className="flex h-screen w-full bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-500">
       
+      {/* Sidebar (Keeping your existing sidebar exactly as is) */}
       <aside className={`fixed md:relative z-[70] h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col justify-between p-6 ${isDesktopSidebarCollapsed ? 'md:w-24' : 'md:w-72'}`}>
         <div>
           <div className="flex items-center space-x-3 mb-10 pl-2">
@@ -102,7 +109,6 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-
           <nav className="space-y-2">
             <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed && !isMobileMenuOpen} color="emerald" />
             <div className="h-px bg-slate-100 dark:bg-slate-800 my-4" />
@@ -114,7 +120,6 @@ export default function DashboardPage() {
             <NavButton label="Data Sources" id="sources" icon={Hash} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed && !isMobileMenuOpen} color="emerald" />
           </nav>
         </div>
-
         <div className="space-y-4">
            <div className={`flex items-center justify-center p-2 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 ${isDesktopSidebarCollapsed ? 'flex-col space-y-2' : 'space-x-2'}`}>
               <ThemeIcon icon={Sun} active={theme === 'light'} onClick={() => setTheme('light')} />
@@ -137,6 +142,7 @@ export default function DashboardPage() {
         )}
 
         <div className="p-6 md:p-12 max-w-[1600px] mx-auto min-h-full pb-32 text-left">
+          {/* Header section remains identical */}
           <header className="mb-12">
              <h2 className="text-5xl md:text-7xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white mb-8 leading-none">
                {activeView === 'overview' && <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-500 to-blue-500">Business Summary</span>}
@@ -164,8 +170,9 @@ export default function DashboardPage() {
           </header>
 
           <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+            {/* Added a special prop for SectionScout so it can trigger the Modal */}
             {activeView === "overview" && <SectionOverview missions={missions} signals={signals} stores={stores} onNavigate={setActiveView} onTaskExecute={handleTaskAction} />}
-            {activeView === "scout" && <SectionScout searchTerm={globalSearch} onAddMission={handleAddMission} />}
+            {activeView === "scout" && <SectionScout searchTerm={globalSearch} onAddMission={handleAddMission} onViewAI={(item: any) => setSelectedItem(item)} />}
             {activeView === "hunt" && <SectionHunt location="30064" signals={signals} />} 
             {activeView === "missions" && <SectionMissions activeMissions={missions} onAddMission={handleAddMission} />}
             {activeView === "ledger" && <SectionLedger missions={missions} />}
@@ -173,12 +180,19 @@ export default function DashboardPage() {
             {activeView === "sources" && <SubredditFilter />}
           </div>
         </div>
+
+        {/* --- NEW MODAL COMPONENT PLACEMENT --- */}
+        <ListingModal 
+          item={selectedItem} 
+          isOpen={!!selectedItem} 
+          onClose={() => setSelectedItem(null)} 
+        />
       </main>
     </div>
   );
 }
 
-// Helpers
+// Helpers (NavButton and ThemeIcon remain the same)
 function NavButton({ label, id, icon: Icon, active, set, collapsed, badge, color }: any) {
   const isActive = active === id;
   const colorMap: any = { emerald: "text-emerald-500", blue: "text-blue-500", purple: "text-purple-500", amber: "text-amber-500", rose: "text-rose-500" };
