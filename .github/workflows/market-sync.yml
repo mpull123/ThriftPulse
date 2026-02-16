@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs every 4 hours (at minute 0 of the hour)
     - cron: '0 */4 * * *'
-  workflow_dispatch: # Keeps your manual "Run" button active
+  workflow_dispatch: # Allows you to manually trigger the run from the Actions tab
 
 jobs:
   sync:
@@ -18,11 +18,15 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Scraping Tools
-        run: npm install @supabase/supabase-js cheerio node-fetch
+      - name: Install Scraping and AI Tools
+        run: npm install @supabase/supabase-js cheerio node-fetch openai
 
-      - name: Run Scraper
+      - name: Run Market Sync and AI Assistant
         env:
+          # These names must match your GitHub Secrets vault exactly
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/sync-market-data.js
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          node scripts/sync-market-data.js
+          node scripts/generate-listings.js
