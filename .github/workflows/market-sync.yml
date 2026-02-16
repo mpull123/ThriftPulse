@@ -1,23 +1,25 @@
 name: ThriftPulse Free Sync
 
 on:
-  schedule:
-    - cron: '0 */12 * * *' # Runs every 12 hours
-  workflow_dispatch:
+  workflow_dispatch: # This is what creates the "Run Workflow" button
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Setup Node
-        uses: actions/setup-node@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      - name: Install Scraping Tools
+          node-version: '20'
+
+      - name: Install Dependencies
         run: npm install @supabase/supabase-js cheerio node-fetch
+
       - name: Run Scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node scripts/sync-market-data.js
