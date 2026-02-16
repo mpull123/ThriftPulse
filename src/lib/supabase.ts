@@ -1,17 +1,27 @@
 import { createClient } from '@supabase/supabase-js';
 
-// 1. Pull the keys from your Environment Variables (Vercel/GitHub)
-// We provide fallback strings so the build process doesn't fail if they are missing for a second.
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+/**
+ * 1. PULL ENVIRONMENT VARIABLES
+ * We use the NEXT_PUBLIC_ prefix so these are accessible in the browser.
+ * The '||' fallbacks prevent Vercel from crashing during the 'static' build phase.
+ */
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key';
 
-// 2. Safety Check: If the site is running but keys are missing, log a warning
-if (!supabaseUrl || !supabaseAnonKey) {
+/**
+ * 2. INITIALIZE THE CLIENT
+ * This 'supabase' object will be the primary way your app talks to your database.
+ */
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+/**
+ * 3. SAFETY LOGGING
+ * This only runs in the browser console. If you open your live site and don't 
+ * see data, check the console for this warning!
+ */
+if (typeof window !== 'undefined' && (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)) {
   console.warn(
-    "⚠️ Supabase Error: Missing environment variables. " +
-    "Ensure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are set in Vercel."
+    "⚠️ ThriftPulse: Supabase keys are missing. " +
+    "Check your Vercel Environment Variables (NEXT_PUBLIC_SUPABASE_URL & NEXT_PUBLIC_SUPABASE_ANON_KEY)."
   );
 }
-
-// 3. Initialize the Client
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
