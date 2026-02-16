@@ -1,7 +1,10 @@
 name: ThriftPulse Free Sync
 
 on:
-  workflow_dispatch: # This is what creates the "Run Workflow" button
+  schedule:
+    # Runs every 4 hours (at minute 0 of the hour)
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # Keeps your manual "Run" button active
 
 jobs:
   sync:
@@ -15,7 +18,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
+      - name: Install Scraping Tools
         run: npm install @supabase/supabase-js cheerio node-fetch
 
       - name: Run Scraper
