@@ -317,6 +317,24 @@ function isFashionTerm(term) {
   return keywords.some((kw) => t.includes(kw));
 }
 
+function isBlockedNonFashionTerm(term) {
+  const t = String(term || '').toLowerCase();
+  const blocked = [
+    'wrexham', 'vix', 'psg', 'dortmund', 'champions league', 'schedule',
+    'weather', 'watch', 'curling', 'olympics', 'fire weather',
+    'stock', 'nasdaq', 'dow', 'bitcoin', 'election', 'hurricane'
+  ];
+  return blocked.some((kw) => t.includes(kw));
+}
+
+function shouldUseTrendTerm(term) {
+  const cleaned = String(term || '').trim();
+  if (!cleaned) return false;
+  if (cleaned.length < 4 || cleaned.length > 60) return false;
+  if (isBlockedNonFashionTerm(cleaned)) return false;
+  return isFashionTerm(cleaned);
+}
+
 async function classifyFashionTermsWithAI(rawTerms) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !Array.isArray(rawTerms) || rawTerms.length === 0) return null;
@@ -360,7 +378,7 @@ async function classifyFashionTermsWithAI(rawTerms) {
   const selected = Array.isArray(payload?.selected_terms)
     ? payload.selected_terms.map((t) => String(t || '').trim()).filter(Boolean)
     : [];
-  return [...new Set(selected)];
+  return [...new Set(selected)].filter(shouldUseTrendTerm);
 }
 
 async function fetchGoogleTrendsTerms() {
@@ -405,7 +423,7 @@ async function fetchGoogleTrendsTerms() {
   }
 
   const uniqueRaw = [...new Set(rawTerms.map((t) => t.trim()))].filter(Boolean);
-  const uniqueFiltered = [...new Set(filteredTerms.map((t) => t.trim()))].filter(Boolean);
+  const uniqueFiltered = [...new Set(filteredTerms.map((t) => t.trim()))].filter(shouldUseTrendTerm);
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
 
@@ -460,7 +478,9 @@ async function getActiveQueryPacks() {
 }
 
 function mergeDiscoveredTerms(activeQueryPacks, googleTrendsTerms) {
-  const merged = [...activeQueryPacks, ...googleTrendsTerms].map((v) => String(v || '').trim()).filter(Boolean);
+  const merged = [...activeQueryPacks, ...googleTrendsTerms]
+    .map((v) => String(v || '').trim())
+    .filter(shouldUseTrendTerm);
   return [...new Set(merged)];
 }
 
@@ -476,6 +496,10 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
   for (const term of newTerms) {
     try {
       const { avgPrice, sampleCount } = await fetchEbayStats(term, 60);
+      if (sampleCount < 3) {
+        console.log(`⏭️ Skipping low-signal discovery: ${term} (eBay sample ${sampleCount})`);
+        continue;
+      }
       const heatScore = calculateHeatScoreFromFreeSignals({
         previousHeat: 50,
         ebaySampleCount: sampleCount,
@@ -533,11 +557,11 @@ async function syncMarketPulse() {
         console.warn('AI classifier unavailable, falling back to keyword filter:', err.message);
       }
 
-      // If AI returns nothing, fallback to keyword filter. If that is empty, keep top raw terms.
+      // If AI returns nothing, fallback to keyword-filtered terms only.
       googleTrendsTerms =
         (aiTerms && aiTerms.length > 0)
           ? aiTerms
-          : (filteredTerms.length > 0 ? filteredTerms : rawTerms.slice(0, 12));
+          : filteredTerms;
 
       await finishCollectorJob(
         googleJobId,
