@@ -104,6 +104,15 @@ async function fetchEbayStats(term, fallbackPrice) {
     if (!Number.isNaN(p) && p > 0) prices.push(p);
   });
 
+  // Fallback parse: some responses miss selector structure but still contain price spans.
+  if (!prices.length) {
+    const roughMatches = [...html.matchAll(/\$([0-9]+(?:\.[0-9]{2})?)/g)]
+      .map((m) => parseFloat(m[1]))
+      .filter((n) => Number.isFinite(n) && n > 5 && n < 5000)
+      .slice(0, 50);
+    prices.push(...roughMatches);
+  }
+
   if (!prices.length) {
     return {
       avgPrice: safeNumber(fallbackPrice, 0),
@@ -309,19 +318,33 @@ function isFashionTerm(term) {
 }
 
 async function fetchGoogleTrendsTerms() {
-  const url = 'https://trends.google.com/trends/trendingsearches/daily/rss?geo=US';
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'thriftpulse-sync/1.0',
-      Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
-    }
-  });
+  const urls = [
+    'https://trends.google.com/trending/rss?geo=US',
+    'https://trends.google.com/trends/trendingsearches/daily/rss?geo=US',
+    'https://trends.google.com/trends/hottrends/atom/feed?pn=p1'
+  ];
 
-  const xml = await res.text();
-  if (!res.ok) {
+  let xml = '';
+  let lastError = 'google_trends_failed_unknown';
+  for (const url of urls) {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'thriftpulse-sync/1.0',
+        Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
+      }
+    });
+
+    xml = await res.text();
+    if (res.ok && /<item>/i.test(xml)) {
+      lastError = '';
+      break;
+    }
+
     const snippet = xml.slice(0, 120).replace(/\s+/g, ' ');
-    throw new Error(`google_trends_failed status=${res.status} body="${snippet}"`);
+    lastError = `google_trends_failed status=${res.status} url=${url} body="${snippet}"`;
   }
+
+  if (lastError) throw new Error(lastError);
 
   const titleMatches = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)];
   const rawTitles = titleMatches.map((m) => m[1]).filter(Boolean);
@@ -444,6 +467,7 @@ async function syncMarketPulse() {
   const ebayJobId = await startCollectorJob('ebay');
   const redditJobId = await startCollectorJob('reddit');
   let ebayFailures = 0;
+  let ebayNoSampleCount = 0;
   let googleFailures = 0;
   let redditFailures = 0;
   const redditFailureDetails = [];
@@ -508,6 +532,7 @@ async function syncMarketPulse() {
         const ebayStats = await fetchEbayStats(signal.trend_name, signal.exit_price);
         avgPrice = ebayStats.avgPrice;
         sampleCount = ebayStats.sampleCount;
+        if (sampleCount === 0) ebayNoSampleCount += 1;
       } catch (err) {
         ebayFailures += 1;
         console.error(`❌ eBay fetch failed for ${signal.trend_name}:`, err.message);
@@ -554,8 +579,12 @@ async function syncMarketPulse() {
 
     await finishCollectorJob(
       ebayJobId,
-      ebayFailures > 0 ? 'degraded' : 'success',
-      ebayFailures > 0 ? `${ebayFailures} item(s) failed eBay fetch.` : null
+      ebayFailures > 0 || ebayNoSampleCount === signals.length ? 'degraded' : 'success',
+      ebayFailures > 0
+        ? `${ebayFailures} item(s) failed eBay fetch.`
+        : ebayNoSampleCount === signals.length
+          ? `No eBay sold-price samples detected for all ${signals.length} signals.`
+          : null
     );
     if (redditEnabled) {
       await finishCollectorJob(
