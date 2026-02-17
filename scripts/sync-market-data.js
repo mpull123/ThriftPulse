@@ -6,6 +6,35 @@ const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch
 // Using the exact names from your GitHub Secrets
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+const DEFAULT_SUBREDDITS = [
+  'malefashionadvice',
+  'femalefashionadvice',
+  'fashion',
+  'PetiteFashionAdvice',
+  'mensfashion',
+  'streetwear',
+  'OUTFITS',
+  'Sneakers',
+  'frugalmalefashion',
+  'FrugalFemaleFashion',
+  'rawdenim',
+  'VintageFashion',
+  'thrifting',
+  'ThriftStoreHauls',
+  'Goodwill_Finds',
+  'SecondHandFinds'
+];
+
+function getTargetSubreddits() {
+  const fromEnv = String(process.env.REDDIT_SUBREDDITS || '')
+    .split(',')
+    .map((v) => v.replace(/^r\//i, '').trim())
+    .filter(Boolean);
+
+  const list = fromEnv.length ? fromEnv : DEFAULT_SUBREDDITS;
+  return [...new Set(list)];
+}
+
 function safeNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -80,11 +109,20 @@ async function fetchEbayAveragePrice(term, fallbackPrice) {
 }
 
 async function fetchRedditMentionCount(term) {
-  const encodedTerm = encodeURIComponent(term);
-  const candidates = [
-    `https://www.reddit.com/search.json?q=${encodedTerm}&sort=new&t=week&limit=100`,
-    `https://www.reddit.com/search.json?raw_json=1&q=${encodedTerm}&sort=relevance&t=week&limit=100`
-  ];
+  const subreddits = getTargetSubreddits();
+  let oauthError = null;
+  try {
+    const oauthCount = await fetchRedditMentionCountOAuth(term);
+    if (oauthCount !== null) return oauthCount;
+  } catch (err) {
+    oauthError = err.message;
+  }
+
+  const encodedTerm = encodeURIComponent(`"${term}"`);
+  const candidates = subreddits.flatMap((subreddit) => ([
+    `https://www.reddit.com/r/${subreddit}/search.json?restrict_sr=1&sort=new&t=week&limit=50&q=${encodedTerm}`,
+    `https://www.reddit.com/r/${subreddit}/search.json?raw_json=1&restrict_sr=1&sort=relevance&t=week&limit=50&q=${encodedTerm}`
+  ]));
   const headersList = [
     {
       'User-Agent': 'thriftpulse-sync/1.0',
@@ -97,7 +135,7 @@ async function fetchRedditMentionCount(term) {
     }
   ];
 
-  let lastError = 'Unknown reddit error';
+  let lastError = oauthError || 'Unknown reddit error';
   for (const url of candidates) {
     for (const headers of headersList) {
       try {
@@ -144,6 +182,88 @@ async function fetchRedditMentionCount(term) {
   }
 
   throw new Error(lastError);
+}
+
+async function fetchRedditMentionCountOAuth(term) {
+  const subreddits = getTargetSubreddits();
+  const clientId = process.env.REDDIT_CLIENT_ID;
+  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+  const userAgent = process.env.REDDIT_USER_AGENT || 'thriftpulse-sync/1.0';
+
+  if (!clientId || !clientSecret) return null;
+
+  const authToken = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const tokenRes = await fetch('https://www.reddit.com/api/v1/access_token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${authToken}`,
+      'User-Agent': userAgent,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+
+  const tokenText = await tokenRes.text();
+  if (!tokenRes.ok) {
+    const snippet = tokenText.slice(0, 120).replace(/\s+/g, ' ');
+    throw new Error(`oauth_token_failed status=${tokenRes.status} body="${snippet}"`);
+  }
+
+  let tokenJson = null;
+  try {
+    tokenJson = JSON.parse(tokenText);
+  } catch (err) {
+    throw new Error(`oauth_token_parse_failed ${err.message}`);
+  }
+
+  const accessToken = tokenJson?.access_token;
+  if (!accessToken) throw new Error('oauth_token_missing_access_token');
+
+  const termRegex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
+  let totalMentions = 0;
+  let totalPosts = 0;
+  let lastError = null;
+
+  for (const subreddit of subreddits) {
+    const url = `https://oauth.reddit.com/r/${subreddit}/search?restrict_sr=1&q=${encodeURIComponent(`"${term}"`)}&sort=new&t=week&limit=50`;
+    const searchRes = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'User-Agent': userAgent,
+        Accept: 'application/json'
+      }
+    });
+
+    const bodyText = await searchRes.text();
+    if (!searchRes.ok) {
+      const snippet = bodyText.slice(0, 120).replace(/\s+/g, ' ');
+      lastError = `oauth_search_failed status=${searchRes.status} subreddit=${subreddit} body="${snippet}"`;
+      continue;
+    }
+
+    let searchJson = null;
+    try {
+      searchJson = JSON.parse(bodyText);
+    } catch (err) {
+      lastError = `oauth_search_parse_failed subreddit=${subreddit} ${err.message}`;
+      continue;
+    }
+
+    const posts = searchJson?.data?.children || [];
+    if (!Array.isArray(posts)) continue;
+    totalPosts += posts.length;
+
+    for (const post of posts) {
+      const title = post?.data?.title || '';
+      const selfText = post?.data?.selftext || '';
+      totalMentions += (title.match(termRegex) || []).length;
+      totalMentions += (selfText.match(termRegex) || []).length;
+    }
+  }
+
+  if (totalPosts > 0) return Math.max(totalMentions, totalPosts);
+  if (lastError) throw new Error(lastError);
+  return 0;
 }
 
 function calculateHeatScore(previousHeat, mentionCount) {
