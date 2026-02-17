@@ -317,6 +317,52 @@ function isFashionTerm(term) {
   return keywords.some((kw) => t.includes(kw));
 }
 
+async function classifyFashionTermsWithAI(rawTerms) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !Array.isArray(rawTerms) || rawTerms.length === 0) return null;
+
+  const inputTerms = rawTerms.slice(0, 40);
+  const systemPrompt =
+    'You are a fashion resale trend classifier. Return only strict JSON with keys: selected_terms (string[]), dropped_terms (string[]). Select terms relevant to clothing, footwear, accessories, styling, thrifting, vintage, or resale fashion.';
+  const userPrompt = `Classify these Google trend terms for fashion relevance:\n${JSON.stringify(inputTerms)}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
+    })
+  });
+
+  const bodyText = await res.text();
+  if (!res.ok) {
+    const snippet = bodyText.slice(0, 140).replace(/\s+/g, ' ');
+    throw new Error(`ai_classify_failed status=${res.status} body="${snippet}"`);
+  }
+
+  let payload = null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    payload = JSON.parse(parsed?.choices?.[0]?.message?.content || '{}');
+  } catch (err) {
+    throw new Error(`ai_classify_parse_failed ${err.message}`);
+  }
+
+  const selected = Array.isArray(payload?.selected_terms)
+    ? payload.selected_terms.map((t) => String(t || '').trim()).filter(Boolean)
+    : [];
+  return [...new Set(selected)];
+}
+
 async function fetchGoogleTrendsTerms() {
   const urls = [
     'https://trends.google.com/trending/rss?geo=US',
@@ -349,14 +395,18 @@ async function fetchGoogleTrendsTerms() {
   const titleMatches = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)];
   const rawTitles = titleMatches.map((m) => m[1]).filter(Boolean);
 
-  const terms = [];
+  const rawTerms = [];
+  const filteredTerms = [];
   for (const title of rawTitles) {
     for (const term of extractTermsFromTrendTitle(title)) {
-      if (isFashionTerm(term)) terms.push(term);
+      rawTerms.push(term);
+      if (isFashionTerm(term)) filteredTerms.push(term);
     }
   }
 
-  return [...new Set(terms.map((t) => t.trim()))];
+  const uniqueRaw = [...new Set(rawTerms.map((t) => t.trim()))].filter(Boolean);
+  const uniqueFiltered = [...new Set(filteredTerms.map((t) => t.trim()))].filter(Boolean);
+  return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
 
 function hasRedditCredentials() {
@@ -475,11 +525,24 @@ async function syncMarketPulse() {
   try {
     let googleTrendsTerms = [];
     try {
-      googleTrendsTerms = await fetchGoogleTrendsTerms();
+      const { rawTerms, filteredTerms } = await fetchGoogleTrendsTerms();
+      let aiTerms = null;
+      try {
+        aiTerms = await classifyFashionTermsWithAI(rawTerms);
+      } catch (err) {
+        console.warn('AI classifier unavailable, falling back to keyword filter:', err.message);
+      }
+
+      // If AI returns nothing, fallback to keyword filter. If that is empty, keep top raw terms.
+      googleTrendsTerms =
+        (aiTerms && aiTerms.length > 0)
+          ? aiTerms
+          : (filteredTerms.length > 0 ? filteredTerms : rawTerms.slice(0, 12));
+
       await finishCollectorJob(
         googleJobId,
         'success',
-        `Captured ${googleTrendsTerms.length} fashion-filtered Google Trends terms.`
+        `Captured ${googleTrendsTerms.length} Google Trends terms for trend discovery.`
       );
     } catch (err) {
       googleFailures += 1;
