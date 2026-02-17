@@ -80,26 +80,70 @@ async function fetchEbayAveragePrice(term, fallbackPrice) {
 }
 
 async function fetchRedditMentionCount(term) {
-  const redditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(term)}&sort=new&t=week&limit=100`;
-  const redditRes = await fetch(redditUrl, {
-    headers: { 'User-Agent': 'thriftpulse-sync/1.0' }
-  });
-  const redditJson = await redditRes.json();
-  const posts = redditJson?.data?.children || [];
-  if (!Array.isArray(posts) || posts.length === 0) return 0;
+  const encodedTerm = encodeURIComponent(term);
+  const candidates = [
+    `https://www.reddit.com/search.json?q=${encodedTerm}&sort=new&t=week&limit=100`,
+    `https://www.reddit.com/search.json?raw_json=1&q=${encodedTerm}&sort=relevance&t=week&limit=100`
+  ];
+  const headersList = [
+    {
+      'User-Agent': 'thriftpulse-sync/1.0',
+      Accept: 'application/json'
+    },
+    {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      Accept: 'application/json'
+    }
+  ];
 
-  const termRegex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
-  let mentions = 0;
+  let lastError = 'Unknown reddit error';
+  for (const url of candidates) {
+    for (const headers of headersList) {
+      try {
+        const redditRes = await fetch(url, { headers });
+        const bodyText = await redditRes.text();
 
-  for (const post of posts) {
-    const title = post?.data?.title || '';
-    const selfText = post?.data?.selftext || '';
-    mentions += (title.match(termRegex) || []).length;
-    mentions += (selfText.match(termRegex) || []).length;
+        if (!redditRes.ok) {
+          const snippet = bodyText.slice(0, 120).replace(/\s+/g, ' ');
+          lastError = `status=${redditRes.status} endpoint=${url} body="${snippet}"`;
+          continue;
+        }
+
+        let redditJson = null;
+        try {
+          redditJson = JSON.parse(bodyText);
+        } catch (parseErr) {
+          lastError = `json_parse_failed endpoint=${url} msg=${parseErr.message}`;
+          continue;
+        }
+
+        const posts = redditJson?.data?.children || [];
+        if (!Array.isArray(posts)) {
+          lastError = `invalid_payload endpoint=${url}`;
+          continue;
+        }
+        if (posts.length === 0) return 0;
+
+        const termRegex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
+        let mentions = 0;
+
+        for (const post of posts) {
+          const title = post?.data?.title || '';
+          const selfText = post?.data?.selftext || '';
+          mentions += (title.match(termRegex) || []).length;
+          mentions += (selfText.match(termRegex) || []).length;
+        }
+
+        // Use at least post count as weak signal if exact term is sparse in text.
+        return Math.max(mentions, posts.length);
+      } catch (err) {
+        lastError = `network_error endpoint=${url} msg=${err.message}`;
+      }
+    }
   }
 
-  // Use at least post count as weak signal if exact term is sparse in text.
-  return Math.max(mentions, posts.length);
+  throw new Error(lastError);
 }
 
 function calculateHeatScore(previousHeat, mentionCount) {
@@ -178,6 +222,7 @@ async function syncMarketPulse() {
   const ebayJobId = await startCollectorJob('ebay');
   let ebayFailures = 0;
   let redditFailures = 0;
+  const redditFailureDetails = [];
 
   try {
     // 1. Pull the brands/items you want to track from your database
@@ -216,6 +261,9 @@ async function syncMarketPulse() {
         mentionCount = await fetchRedditMentionCount(signal.trend_name);
       } catch (err) {
         redditFailures += 1;
+        if (redditFailureDetails.length < 5) {
+          redditFailureDetails.push(`${signal.trend_name}: ${err.message}`);
+        }
         console.error(`❌ Reddit fetch failed for ${signal.trend_name}:`, err.message);
       }
 
@@ -243,7 +291,9 @@ async function syncMarketPulse() {
     await finishCollectorJob(
       redditJobId,
       redditFailures > 0 ? 'degraded' : 'success',
-      redditFailures > 0 ? `${redditFailures} item(s) failed Reddit fetch.` : null
+      redditFailures > 0
+        ? `${redditFailures} item(s) failed Reddit fetch. ${redditFailureDetails.join(' | ')}`
+        : null
     );
 
     console.log("🏁 Sync process finished successfully.");
