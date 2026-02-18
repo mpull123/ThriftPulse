@@ -10,6 +10,23 @@ import {
 import type { CompCheck, ConfidenceLevel } from "@/lib/types";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
 const HEATMAP_PRESET_STORAGE_KEY = "thriftpulse_trends_preset_v1";
+const HEATMAP_PRESET_LIST_STORAGE_KEY = "thriftpulse_trends_presets_v1";
+type HeatmapPresetPayload = {
+  searchTerm: string;
+  confidenceFilter: "all" | "high" | "med" | "low";
+  sourceFilter: "all" | "brand" | "style";
+  sortMode: "heat" | "mentions" | "signal";
+  viewMode: "compact" | "detailed";
+  verifiedOnly: boolean;
+  freshOnly: boolean;
+  lowBuyInOnly: boolean;
+};
+type HeatmapSavedPreset = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+  payload: HeatmapPresetPayload;
+};
 
 function hashString(input: string): number {
   let hash = 0;
@@ -159,6 +176,9 @@ export default function SectionHeatmap({
   const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [savedPresets, setSavedPresets] = useState<HeatmapSavedPreset[]>([]);
+  const [showPresetManager, setShowPresetManager] = useState(false);
+  const [presetName, setPresetName] = useState("");
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
@@ -167,17 +187,22 @@ export default function SectionHeatmap({
 
   useEffect(() => {
     try {
+      const listRaw = localStorage.getItem(HEATMAP_PRESET_LIST_STORAGE_KEY);
+      let defaultPresetPayload: HeatmapPresetPayload | null = null;
+      if (listRaw) {
+        const list = JSON.parse(listRaw) as HeatmapSavedPreset[];
+        const safeList = Array.isArray(list) ? list : [];
+        setSavedPresets(safeList);
+        const defaultPreset = safeList.find((p) => p.isDefault && p.payload);
+        defaultPresetPayload = defaultPreset?.payload || null;
+      }
+
       const raw = localStorage.getItem(HEATMAP_PRESET_STORAGE_KEY);
-      if (raw) {
+      if (defaultPresetPayload) {
+        applyPresetPayload(defaultPresetPayload);
+      } else if (raw) {
         const preset = JSON.parse(raw);
-        setSearchTerm(String(preset.searchTerm || ""));
-        setConfidenceFilter(preset.confidenceFilter || "all");
-        setSourceFilter(preset.sourceFilter || "all");
-        setSortMode(preset.sortMode || "signal");
-        setViewMode(preset.viewMode || "detailed");
-        setVerifiedOnly(Boolean(preset.verifiedOnly));
-        setFreshOnly(Boolean(preset.freshOnly));
-        setLowBuyInOnly(Boolean(preset.lowBuyInOnly));
+        applyPresetPayload(preset);
       } else {
         setConfidenceFilter("high");
       }
@@ -185,6 +210,18 @@ export default function SectionHeatmap({
       setConfidenceFilter("high");
     }
   }, []);
+
+  const applyPresetPayload = (payload: HeatmapPresetPayload) => {
+    setSearchTerm(String(payload.searchTerm || ""));
+    setConfidenceFilter(payload.confidenceFilter || "all");
+    setSourceFilter(payload.sourceFilter || "all");
+    setSortMode(payload.sortMode || "signal");
+    setViewMode(payload.viewMode || "detailed");
+    setVerifiedOnly(Boolean(payload.verifiedOnly));
+    setFreshOnly(Boolean(payload.freshOnly));
+    setLowBuyInOnly(Boolean(payload.lowBuyInOnly));
+    setCompareIds([]);
+  };
 
   // If props are passed (from parent fetch), use them
   useEffect(() => {
@@ -316,7 +353,7 @@ export default function SectionHeatmap({
   };
 
   const saveCurrentPreset = () => {
-    const payload = {
+    const payload: HeatmapPresetPayload = {
       searchTerm,
       confidenceFilter,
       sourceFilter,
@@ -327,6 +364,46 @@ export default function SectionHeatmap({
       lowBuyInOnly,
     };
     localStorage.setItem(HEATMAP_PRESET_STORAGE_KEY, JSON.stringify(payload));
+  };
+
+  const persistPresetList = (next: HeatmapSavedPreset[]) => {
+    setSavedPresets(next);
+    localStorage.setItem(HEATMAP_PRESET_LIST_STORAGE_KEY, JSON.stringify(next));
+  };
+
+  const saveNamedPreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const payload: HeatmapPresetPayload = {
+      searchTerm,
+      confidenceFilter,
+      sourceFilter,
+      sortMode,
+      viewMode,
+      verifiedOnly,
+      freshOnly,
+      lowBuyInOnly,
+    };
+    const next = [
+      ...savedPresets.filter((p) => p.name.toLowerCase() !== name.toLowerCase()),
+      { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, name, payload, isDefault: false },
+    ];
+    persistPresetList(next);
+    setPresetName("");
+  };
+
+  const applyNamedPreset = (preset: HeatmapSavedPreset) => {
+    applyPresetPayload(preset.payload);
+    localStorage.setItem(HEATMAP_PRESET_STORAGE_KEY, JSON.stringify(preset.payload));
+  };
+
+  const deleteNamedPreset = (id: string) => {
+    persistPresetList(savedPresets.filter((p) => p.id !== id));
+  };
+
+  const setDefaultPreset = (id: string) => {
+    const next = savedPresets.map((p) => ({ ...p, isDefault: p.id === id }));
+    persistPresetList(next);
   };
 
   return (
@@ -433,7 +510,41 @@ export default function SectionHeatmap({
         <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
         <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
         <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
+        <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Presets</button>
       </div>
+
+      {showPresetManager && (
+        <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Trends Preset Manager</h5>
+            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close</button>
+          </div>
+          <div className="flex gap-2 mb-4">
+            <input
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              placeholder="Preset name"
+              className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase"
+            />
+            <button onClick={saveNamedPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save As</button>
+          </div>
+          <div className="space-y-2">
+            {savedPresets.length === 0 && <p className="text-[10px] font-black uppercase text-slate-400">No saved presets yet.</p>}
+            {savedPresets.map((preset) => (
+              <div key={preset.id} className="flex items-center justify-between rounded-2xl border border-slate-200 dark:border-slate-700 p-3">
+                <p className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">
+                  {preset.name} {preset.isDefault ? "(Default)" : ""}
+                </p>
+                <div className="flex gap-2">
+                  <button onClick={() => applyNamedPreset(preset)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">Apply</button>
+                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Default</button>
+                  <button onClick={() => deleteNamedPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">

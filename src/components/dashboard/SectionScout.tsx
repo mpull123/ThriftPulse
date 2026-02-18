@@ -11,6 +11,21 @@ import {
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
 const SCOUT_PRESET_STORAGE_KEY = "thriftpulse_research_preset_v1";
+const SCOUT_PRESET_LIST_STORAGE_KEY = "thriftpulse_research_presets_v1";
+type ScoutPresetPayload = {
+  searchTerm: string;
+  confidenceFilter: "all" | "high" | "med" | "low";
+  decisionFilter: "all" | "Buy" | "Maybe" | "Skip" | "Watchlist";
+  sortMode: "heat" | "mentions" | "profit";
+  viewMode: "compact" | "detailed";
+  lowBuyInOnly: boolean;
+};
+type ScoutSavedPreset = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+  payload: ScoutPresetPayload;
+};
 
 function extractTrendTargets(signal: any): string[] {
   const targets = new Set<string>();
@@ -341,6 +356,9 @@ export default function SectionScout({
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [savedPresets, setSavedPresets] = useState<ScoutSavedPreset[]>([]);
+  const [showPresetManager, setShowPresetManager] = useState(false);
+  const [presetName, setPresetName] = useState("");
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
@@ -349,15 +367,22 @@ export default function SectionScout({
 
   useEffect(() => {
     try {
+      const listRaw = localStorage.getItem(SCOUT_PRESET_LIST_STORAGE_KEY);
+      let defaultPresetPayload: ScoutPresetPayload | null = null;
+      if (listRaw) {
+        const list = JSON.parse(listRaw) as ScoutSavedPreset[];
+        const safeList = Array.isArray(list) ? list : [];
+        setSavedPresets(safeList);
+        const defaultPreset = safeList.find((p) => p.isDefault && p.payload);
+        defaultPresetPayload = defaultPreset?.payload || null;
+      }
+
       const raw = localStorage.getItem(SCOUT_PRESET_STORAGE_KEY);
-      if (raw) {
+      if (defaultPresetPayload) {
+        applyPresetPayload(defaultPresetPayload);
+      } else if (raw) {
         const preset = JSON.parse(raw);
-        setSearchTerm(String(preset.searchTerm || ""));
-        setConfidenceFilter(preset.confidenceFilter || "all");
-        setDecisionFilter(preset.decisionFilter || "all");
-        setSortMode(preset.sortMode || "heat");
-        setViewMode(preset.viewMode || "detailed");
-        setLowBuyInOnly(Boolean(preset.lowBuyInOnly));
+        applyPresetPayload(preset);
       } else {
         setConfidenceFilter("high");
       }
@@ -365,6 +390,16 @@ export default function SectionScout({
       setConfidenceFilter("high");
     }
   }, []);
+
+  const applyPresetPayload = (payload: ScoutPresetPayload) => {
+    setSearchTerm(String(payload.searchTerm || ""));
+    setConfidenceFilter(payload.confidenceFilter || "all");
+    setDecisionFilter(payload.decisionFilter || "all");
+    setSortMode(payload.sortMode || "heat");
+    setViewMode(payload.viewMode || "detailed");
+    setLowBuyInOnly(Boolean(payload.lowBuyInOnly));
+    setCompareIds([]);
+  };
 
   const latestCollectorRun = getLatestCollectorRun(collectorJobs);
   const collectorRunAge = getRunAgeLabel(latestCollectorRun);
@@ -681,7 +716,7 @@ export default function SectionScout({
   };
 
   const saveCurrentPreset = () => {
-    const payload = {
+    const payload: ScoutPresetPayload = {
       searchTerm,
       confidenceFilter,
       decisionFilter,
@@ -690,6 +725,44 @@ export default function SectionScout({
       lowBuyInOnly,
     };
     localStorage.setItem(SCOUT_PRESET_STORAGE_KEY, JSON.stringify(payload));
+  };
+
+  const persistPresetList = (next: ScoutSavedPreset[]) => {
+    setSavedPresets(next);
+    localStorage.setItem(SCOUT_PRESET_LIST_STORAGE_KEY, JSON.stringify(next));
+  };
+
+  const saveNamedPreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const payload: ScoutPresetPayload = {
+      searchTerm,
+      confidenceFilter,
+      decisionFilter,
+      sortMode,
+      viewMode,
+      lowBuyInOnly,
+    };
+    const next = [
+      ...savedPresets.filter((p) => p.name.toLowerCase() !== name.toLowerCase()),
+      { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, name, payload, isDefault: false },
+    ];
+    persistPresetList(next);
+    setPresetName("");
+  };
+
+  const applyNamedPreset = (preset: ScoutSavedPreset) => {
+    applyPresetPayload(preset.payload);
+    localStorage.setItem(SCOUT_PRESET_STORAGE_KEY, JSON.stringify(preset.payload));
+  };
+
+  const deleteNamedPreset = (id: string) => {
+    persistPresetList(savedPresets.filter((p) => p.id !== id));
+  };
+
+  const setDefaultPreset = (id: string) => {
+    const next = savedPresets.map((p) => ({ ...p, isDefault: p.id === id }));
+    persistPresetList(next);
   };
 
   return (
@@ -756,8 +829,44 @@ export default function SectionScout({
           <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
           <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
           <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
+          <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Presets</button>
         </div>
       </section>
+
+      {showPresetManager && (
+        <section className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Research Preset Manager</h5>
+            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close</button>
+          </div>
+          <div className="flex gap-2 mb-4">
+            <input
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              placeholder="Preset name"
+              className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase"
+            />
+            <button onClick={saveNamedPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save As</button>
+          </div>
+          <div className="space-y-2">
+            {savedPresets.length === 0 && <p className="text-[10px] font-black uppercase text-slate-400">No saved presets yet.</p>}
+            {savedPresets.map((preset) => (
+              <div key={preset.id} className="flex items-center justify-between rounded-2xl border border-slate-200 dark:border-slate-700 p-3">
+                <div>
+                  <p className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">
+                    {preset.name} {preset.isDefault ? "(Default)" : ""}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => applyNamedPreset(preset)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">Apply</button>
+                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Default</button>
+                  <button onClick={() => deleteNamedPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {comparedNodes.length > 0 && (
         <section className="rounded-3xl border border-blue-500/30 bg-blue-500/5 p-6">
