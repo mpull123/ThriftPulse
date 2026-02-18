@@ -45,6 +45,9 @@ function hashString(input: string): number {
 }
 
 function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
+  const explicitMentionCount = Number(signal?.mention_count || 0);
+  if (explicitMentionCount > 0) return explicitMentionCount;
+
   const heat = Number(signal?.heat_score || 0);
   const cues = Array.isArray(signal?.visual_cues) ? signal.visual_cues.length : 0;
   const hasBrand = Boolean(String(signal?.hook_brand || "").trim());
@@ -62,6 +65,17 @@ function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
     jitter;
 
   return Math.max(12, Math.min(280, estimated));
+}
+
+function getSignalScore(signal: any, latestComp: CompCheck | null): number {
+  const explicitScore = Number(signal?.confidence_score || 0);
+  if (explicitScore > 0) return Math.max(10, Math.min(99, Math.round(explicitScore)));
+
+  const mentions = getTrendMentions(signal, latestComp);
+  const heat = Number(signal?.heat_score || 0);
+  const sample = Number(latestComp?.sample_size || 0);
+  const score = 15 + Math.round(heat * 0.45) + Math.min(20, Math.round(mentions / 8)) + Math.min(12, sample * 2);
+  return Math.max(10, Math.min(99, score));
 }
 
 function getSignalIntel(signal: any): string {
@@ -88,7 +102,28 @@ function getSignalIntel(signal: any): string {
   return parts.join(" ") || "Live trend signal from eBay + fashion source pipeline.";
 }
 
-function getFallbackConfidence(signal: any): ConfidenceLevel {
+function toTargetBullet(item: string, kind: "brand" | "style"): string {
+  const text = String(item || "").trim();
+  if (!text) return "";
+  if (/^risk check:/i.test(text)) {
+    return `${text} Prioritize authentication checks before buying.`;
+  }
+  if (/piece$/i.test(text)) {
+    return `${text}: prioritize the cleanest condition and strongest comp pricing.`;
+  }
+  return kind === "brand"
+    ? `${text}: verify tags, hardware, and era details before sourcing.`
+    : `${text}: compare silhouette, condition, and resale comps before adding.`;
+}
+
+function formatMentions(value: number): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "0";
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
   const hasCues = Array.isArray(signal?.visual_cues) && signal.visual_cues.length >= 2;
   const hasSentiment = Boolean(String(signal?.market_sentiment || "").trim());
   const hasRisk = Boolean(String(signal?.risk_factor || "").trim());
@@ -102,8 +137,8 @@ function getFallbackConfidence(signal: any): ConfidenceLevel {
     (hasBrand ? 1 : 0) +
     (heat >= 80 ? 1 : 0);
 
-  if (heat >= 88 || score >= 4) return "high";
-  if (heat >= 70 || score >= 2) return "med";
+  if (signalScore >= 78 || heat >= 88 || score >= 4) return "high";
+  if (signalScore >= 52 || heat >= 70 || score >= 2) return "med";
   return "low";
 }
 
@@ -267,7 +302,8 @@ export default function SectionScout({
   const liveTrends = signals.map((s: any) => {
     const latestComp = getLatestCompCheck(s, compChecks);
     const compConfidence = getConfidenceFromComp(latestComp);
-    const confidence = latestComp ? compConfidence : getFallbackConfidence(s);
+    const signalScore = getSignalScore(s, latestComp);
+    const confidence = latestComp ? compConfidence : getFallbackConfidence(s, signalScore);
     const topTargets = extractTrendTargets(s);
 
     return {
@@ -279,6 +315,7 @@ export default function SectionScout({
       source: s?.track || "Live Monitor",
       sentiment: s.heat_score > 80 ? "Surging" : "Stable",
       mentions: getTrendMentions(s, latestComp),
+      signalScore,
       entry_price: s.exit_price || 0,
       intel: getSignalIntel(s),
       what_to_buy: topTargets.length ? topTargets : ["Check tag era", "Verify construction details"],
@@ -320,17 +357,17 @@ export default function SectionScout({
             >
               <div className="absolute top-0 left-0 h-1.5 bg-emerald-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start mb-6">
-                <div>
+                <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-emerald-500/10 text-emerald-600 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
                   </div>
-                  <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight">{node.name}</h3>
+                  <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words">{node.name}</h3>
                 </div>
-                <div className="text-right">
+                <div className="text-right shrink-0 ml-3">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>
-                  <p className="text-xl font-black italic text-emerald-500">{node.mentions}</p>
+                  <p className="text-lg font-black italic text-emerald-500 leading-none tabular-nums">{formatMentions(node.mentions)}</p>
                 </div>
               </div>
               <div className="bg-emerald-500/5 border border-emerald-500/10 p-6 rounded-3xl mb-8 flex-1">
@@ -344,17 +381,12 @@ export default function SectionScout({
                  <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest flex items-center mb-2 italic"><Info size={14} className="mr-2" /> Brand Intel:</p>
                  <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed">{node.intel}</p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
-                 <ul className="space-y-1">
+                 <ul className="list-disc pl-5 space-y-2">
                   {(node.what_to_buy || []).slice(0, 3).map((item: string, i: number) => (
-                    <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center italic">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 mr-2" /> {item}
+                    <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
+                      {toTargetBullet(item, "brand")}
                     </li>
                   ))}
-                  {(node.what_to_buy || []).length > 3 && (
-                    <li className="text-[10px] font-black text-slate-400 italic pl-3.5">
-                      +{Math.max(0, (node.what_to_buy || []).length - 3)} more...
-                    </li>
-                  )}
                  </ul>
               </div>
               <div className="mt-auto space-y-4">
@@ -414,17 +446,22 @@ export default function SectionScout({
             >
               <div className="absolute top-0 left-0 h-1.5 bg-blue-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start mb-6">
-                <div>
+                <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
+                     {node.signalScore && (
+                       <span className="bg-slate-900/10 text-slate-700 dark:text-slate-200 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
+                         Signal {node.signalScore}
+                       </span>
+                     )}
                   </div>
-                  <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight">{node.name}</h3>
+                  <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words">{node.name}</h3>
                 </div>
-                <div className="text-right">
+                <div className="text-right shrink-0 ml-3">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>
-                  <p className="text-xl font-black italic text-blue-500">{node.mentions}</p>
+                  <p className="text-lg font-black italic text-blue-500 leading-none tabular-nums">{formatMentions(node.mentions)}</p>
                 </div>
               </div>
               
@@ -443,11 +480,12 @@ export default function SectionScout({
                    {node.intel}
                  </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
-                 <ul className="space-y-2">
+                 <ul className="list-disc pl-5 space-y-2">
                    {node.what_to_buy && node.what_to_buy.slice(0, 3).map((item: string, i: number) => (
-                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center italic"><span className="h-1.5 w-1.5 rounded-full bg-blue-500 mr-2" /> {item}</li>
+                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
+                       {toTargetBullet(item, "style")}
+                     </li>
                    ))}
-                   {node.what_to_buy && <li className="text-[10px] font-black text-slate-400 italic pl-3.5">+{Math.max(0, node.what_to_buy.length - 3)} more...</li>}
                  </ul>
               </div>
 
