@@ -765,6 +765,21 @@ export default function SectionScout({
     persistPresetList(next);
   };
 
+  const resetToSystemDefault = () => {
+    localStorage.removeItem(SCOUT_PRESET_STORAGE_KEY);
+    localStorage.removeItem(SCOUT_PRESET_LIST_STORAGE_KEY);
+    setSavedPresets([]);
+    setPresetName("");
+    applyPresetPayload({
+      searchTerm: "",
+      confidenceFilter: "high",
+      decisionFilter: "all",
+      sortMode: "heat",
+      viewMode: "detailed",
+      lowBuyInOnly: false,
+    });
+  };
+
   return (
     <div className="space-y-20 text-left pb-24">
       <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
@@ -847,6 +862,7 @@ export default function SectionScout({
               className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase"
             />
             <button onClick={saveNamedPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save As</button>
+            <button onClick={resetToSystemDefault} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Reset to System Default</button>
           </div>
           <div className="space-y-2">
             {savedPresets.length === 0 && <p className="text-[10px] font-black uppercase text-slate-400">No saved presets yet.</p>}

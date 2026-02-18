@@ -406,6 +406,23 @@ export default function SectionHeatmap({
     persistPresetList(next);
   };
 
+  const resetToSystemDefault = () => {
+    localStorage.removeItem(HEATMAP_PRESET_STORAGE_KEY);
+    localStorage.removeItem(HEATMAP_PRESET_LIST_STORAGE_KEY);
+    setSavedPresets([]);
+    setPresetName("");
+    applyPresetPayload({
+      searchTerm: "",
+      confidenceFilter: "high",
+      sourceFilter: "all",
+      sortMode: "signal",
+      viewMode: "detailed",
+      verifiedOnly: false,
+      freshOnly: false,
+      lowBuyInOnly: false,
+    });
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
       
@@ -527,6 +544,7 @@ export default function SectionHeatmap({
               className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase"
             />
             <button onClick={saveNamedPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save As</button>
+            <button onClick={resetToSystemDefault} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Reset to System Default</button>
           </div>
           <div className="space-y-2">
             {savedPresets.length === 0 && <p className="text-[10px] font-black uppercase text-slate-400">No saved presets yet.</p>}
