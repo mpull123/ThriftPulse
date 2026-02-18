@@ -356,6 +356,7 @@ export default function SectionScout({
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [compareMode, setCompareMode] = useState<"profit" | "risk" | "velocity">("profit");
   const [savedPresets, setSavedPresets] = useState<ScoutSavedPreset[]>([]);
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [presetName, setPresetName] = useState("");
@@ -682,6 +683,26 @@ export default function SectionScout({
     });
   };
 
+  const confidenceToScore = (confidence: ConfidenceLevel | string | undefined) =>
+    confidence === "high" ? 3 : confidence === "med" ? 2 : 1;
+  const decisionToRisk = (decision: string | undefined) =>
+    decision === "Buy" ? 3 : decision === "Maybe" ? 2 : decision === "Watchlist" ? 1 : 0;
+
+  const recommendation = useMemo(() => {
+    if (!comparedNodes.length) return "";
+    const ranked = [...comparedNodes]
+      .map((node: any) => {
+        const profitScore = Number(node?.expected_profit || 0) + (60 - Number(node?.target_buy || 60));
+        const riskScore = confidenceToScore(node?.confidence) * 20 + decisionToRisk(node?.decision) * 10;
+        const velocityScore =
+          Number(node?.heat || 0) + Number(node?.mentions || 0) * 0.15 + Number(node?.signalScore || 0) * 0.4;
+        const total = compareMode === "profit" ? profitScore : compareMode === "risk" ? riskScore : velocityScore;
+        return { node, total };
+      })
+      .sort((a, b) => b.total - a.total);
+    return ranked[0]?.node?.name ? `Best ${compareMode} pick: ${ranked[0].node.name}` : "";
+  }, [comparedNodes, compareMode]);
+
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
     setCompareIds([]);
     if (preset === "high_confidence") {
@@ -782,6 +803,12 @@ export default function SectionScout({
 
   return (
     <div className="space-y-20 text-left pb-24">
+      <section className="rounded-3xl border border-blue-500/20 bg-blue-500/5 p-5">
+        <p className="text-[10px] font-black uppercase tracking-widest text-blue-500">Decision Lab</p>
+        <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300 mt-1">
+          Decide what to source next using evidence, risk, and used-goods profitability.
+        </p>
+      </section>
       <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
           Research Filters
@@ -888,19 +915,57 @@ export default function SectionScout({
         <section className="rounded-3xl border border-blue-500/30 bg-blue-500/5 p-6">
           <div className="flex items-center justify-between mb-4">
             <h5 className="text-xs font-black uppercase tracking-widest text-blue-500">Compare Tray ({comparedNodes.length})</h5>
-            <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+            <div className="flex items-center gap-2">
+              <select
+                value={compareMode}
+                onChange={(e) => setCompareMode(e.target.value as "profit" | "risk" | "velocity")}
+                className="px-3 py-2 rounded-xl text-[10px] font-black uppercase border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
+              >
+                <option value="profit">Profit</option>
+                <option value="risk">Risk</option>
+                <option value="velocity">Velocity</option>
+              </select>
+              <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+            </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            {comparedNodes.map((node: any) => (
-              <div key={`cmp-${node.id}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
-                <p className="text-[10px] font-black uppercase text-slate-500">{node.type}</p>
-                <p className="text-sm font-black italic text-slate-900 dark:text-white mt-1 line-clamp-2">{node.name}</p>
-                <p className="mt-2 text-[10px] font-black text-slate-500">Heat {node.heat || 0} • Mentions {formatMentions(node.mentions || 0)}</p>
-                <p className="text-[10px] font-black text-slate-500">Buy ≤ {formatUsd(node.target_buy || 0)}</p>
-                <p className="text-[10px] font-black text-slate-500">Sale {formatUsd(node.expected_sale_low || node.expected_sale || 0)}-{formatUsd(node.expected_sale_high || node.expected_sale || 0)}</p>
-                <p className="text-[10px] font-black text-slate-500">Net +{formatUsd(node.expected_profit || 0)}</p>
-              </div>
-            ))}
+          {recommendation && <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-blue-600">{recommendation}</p>}
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-[11px]">
+              <thead>
+                <tr>
+                  <th className="px-3 py-2 text-slate-500 uppercase">Metric</th>
+                  {comparedNodes.map((node: any) => (
+                    <th key={`h-${node.id}`} className="px-3 py-2 text-slate-700 dark:text-slate-200 uppercase">{node.name}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { key: "confidence", label: "Confidence", higher: true, value: (n: any) => confidenceToScore(n.confidence), format: (n: any) => String(n.confidence || "low").toUpperCase() },
+                  { key: "heat", label: "Heat", higher: true, value: (n: any) => Number(n.heat || 0), format: (n: any) => `${Number(n.heat || 0)}` },
+                  { key: "mentions", label: "Mentions", higher: true, value: (n: any) => Number(n.mentions || 0), format: (n: any) => formatMentions(n.mentions || 0) },
+                  { key: "buy", label: "Target Buy", higher: false, value: (n: any) => Number(n.target_buy || 0), format: (n: any) => formatUsd(n.target_buy || 0) },
+                  { key: "net", label: "Expected Net", higher: true, value: (n: any) => Number(n.expected_profit || 0), format: (n: any) => formatUsd(n.expected_profit || 0) },
+                ].map((row) => {
+                  const values = comparedNodes.map((n: any) => row.value(n));
+                  const best = row.higher ? Math.max(...values) : Math.min(...values);
+                  return (
+                    <tr key={row.key} className="border-t border-slate-200 dark:border-slate-700">
+                      <td className="px-3 py-2 font-black uppercase text-slate-500">{row.label}</td>
+                      {comparedNodes.map((node: any) => {
+                        const val = row.value(node);
+                        const delta = row.higher ? val - best : best - val;
+                        return (
+                          <td key={`${row.key}-${node.id}`} className={`px-3 py-2 font-bold ${val === best ? "text-emerald-500" : "text-slate-600 dark:text-slate-300"}`}>
+                            {row.format(node)} {delta !== 0 ? <span className="text-[10px] text-slate-400">({row.higher ? "-" : "+"}{Math.abs(delta)})</span> : ""}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
       )}
@@ -923,6 +988,7 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
+                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
                      {node.decision && (
                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
@@ -1005,7 +1071,7 @@ export default function SectionScout({
                   </p>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); onAdd(node); }} className="w-full py-5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-2xl font-black uppercase italic text-xs tracking-widest hover:bg-emerald-500 transition-all shadow-xl flex items-center justify-center gap-3">
-                  <Plus size={18} /> Add Brand to Trunk
+                  <Plus size={18} /> Queue for Sourcing
                 </button>
                 <button
                   onClick={(e) => {
@@ -1055,6 +1121,7 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
+                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
                      {node.decision && (
                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
@@ -1160,7 +1227,7 @@ export default function SectionScout({
                   </p>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); onAdd(node); }} className="w-full py-5 bg-blue-500 text-white rounded-2xl font-black uppercase italic text-xs tracking-widest hover:bg-slate-900 transition-all shadow-xl flex items-center justify-center gap-3">
-                  <Plus size={18} /> Add Trend to Trunk
+                  <Plus size={18} /> Queue for Sourcing
                 </button>
                 <button
                   onClick={(e) => {
@@ -1179,7 +1246,7 @@ export default function SectionScout({
                     }}
                     className="w-full py-3 bg-rose-500/10 text-rose-500 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-rose-500/20 transition-all"
                   >
-                    Open in Trends
+                    Track in Radar
                   </button>
                 )}
                 <button

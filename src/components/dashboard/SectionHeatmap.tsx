@@ -176,6 +176,7 @@ export default function SectionHeatmap({
   const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [compareMode, setCompareMode] = useState<"profit" | "risk" | "velocity">("velocity");
   const [savedPresets, setSavedPresets] = useState<HeatmapSavedPreset[]>([]);
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [presetName, setPresetName] = useState("");
@@ -301,6 +302,21 @@ export default function SectionHeatmap({
     ? Math.round(visibleData.reduce((sum, item) => sum + (item.mentions || 0), 0) / visibleData.length)
     : 0;
   const comparedItems = visibleData.filter((item) => compareIds.includes(String(item.id || item.trend_name)));
+  const confidenceToScore = (confidence: ConfidenceLevel | string | undefined) =>
+    confidence === "high" ? 3 : confidence === "med" ? 2 : 1;
+  const recommendation = useMemo(() => {
+    if (!comparedItems.length) return "";
+    const ranked = [...comparedItems]
+      .map((item) => {
+        const profitScore = Number(item?.pricing?.expectedProfit || 0) + (60 - Number(item?.pricing?.targetBuy || 60));
+        const riskScore = confidenceToScore(item?.confidence) * 20 + (item?.compStatus === "fresh" ? 15 : item?.compStatus === "stale" ? 5 : 0);
+        const velocityScore = Number(item?.heat_score || 0) + Number(item?.mentions || 0) * 0.15 + Number(item?.signalScore || 0) * 0.4;
+        const total = compareMode === "profit" ? profitScore : compareMode === "risk" ? riskScore : velocityScore;
+        return { item, total };
+      })
+      .sort((a, b) => b.total - a.total);
+    return ranked[0]?.item?.trend_name ? `Best ${compareMode} pick: ${ranked[0].item.trend_name}` : "";
+  }, [comparedItems, compareMode]);
 
   const toggleCompare = (item: any) => {
     const id = String(item.id || item.trend_name);
@@ -425,6 +441,12 @@ export default function SectionHeatmap({
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
+      <div className="rounded-3xl border border-rose-500/20 bg-rose-500/5 p-5">
+        <p className="text-[10px] font-black uppercase tracking-widest text-rose-500">Radar</p>
+        <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300 mt-1">
+          Scan what is emerging, rising, or cooling before promoting it into Decision Lab.
+        </p>
+      </div>
       
       {/* LEGEND */}
       <div className="flex items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 p-6 rounded-3xl shadow-sm">
@@ -583,18 +605,57 @@ export default function SectionHeatmap({
         <div className="rounded-3xl border border-blue-500/30 bg-blue-500/5 p-5">
           <div className="flex items-center justify-between mb-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-blue-500">Trend Compare ({comparedItems.length})</p>
-            <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+            <div className="flex items-center gap-2">
+              <select
+                value={compareMode}
+                onChange={(e) => setCompareMode(e.target.value as "profit" | "risk" | "velocity")}
+                className="px-3 py-2 rounded-xl text-[10px] font-black uppercase border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
+              >
+                <option value="velocity">Velocity</option>
+                <option value="risk">Risk</option>
+                <option value="profit">Profit</option>
+              </select>
+              <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+            </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            {comparedItems.map((item) => (
-              <div key={`cmp-${item.id || item.trend_name}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
-                <p className="text-sm font-black italic text-slate-900 dark:text-white line-clamp-2">{item.trend_name}</p>
-                <p className="mt-2 text-[10px] font-black text-slate-500">Heat {item.heat_score || 0} • Signal {item.signalScore || 0}</p>
-                <p className="text-[10px] font-black text-slate-500">Buy ≤ ${item.pricing?.targetBuy || 0}</p>
-                <p className="text-[10px] font-black text-slate-500">Sale ${item.pricing?.saleLow || 0}-${item.pricing?.saleHigh || 0}</p>
-                <p className="text-[10px] font-black text-slate-500">Net +${item.pricing?.expectedProfit || 0}</p>
-              </div>
-            ))}
+          {recommendation && <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-blue-600">{recommendation}</p>}
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-[11px]">
+              <thead>
+                <tr>
+                  <th className="px-3 py-2 text-slate-500 uppercase">Metric</th>
+                  {comparedItems.map((item) => (
+                    <th key={`h-${item.id || item.trend_name}`} className="px-3 py-2 text-slate-700 dark:text-slate-200 uppercase">{item.trend_name}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { key: "confidence", label: "Confidence", higher: true, value: (n: any) => confidenceToScore(n.confidence), format: (n: any) => String(n.confidence || "low").toUpperCase() },
+                  { key: "heat", label: "Heat", higher: true, value: (n: any) => Number(n.heat_score || 0), format: (n: any) => `${Number(n.heat_score || 0)}` },
+                  { key: "mentions", label: "Mentions", higher: true, value: (n: any) => Number(n.mentions || 0), format: (n: any) => `${Number(n.mentions || 0)}` },
+                  { key: "buy", label: "Target Buy", higher: false, value: (n: any) => Number(n.pricing?.targetBuy || 0), format: (n: any) => `$${Number(n.pricing?.targetBuy || 0)}` },
+                  { key: "net", label: "Expected Net", higher: true, value: (n: any) => Number(n.pricing?.expectedProfit || 0), format: (n: any) => `$${Number(n.pricing?.expectedProfit || 0)}` },
+                ].map((row) => {
+                  const values = comparedItems.map((n: any) => row.value(n));
+                  const best = row.higher ? Math.max(...values) : Math.min(...values);
+                  return (
+                    <tr key={row.key} className="border-t border-slate-200 dark:border-slate-700">
+                      <td className="px-3 py-2 font-black uppercase text-slate-500">{row.label}</td>
+                      {comparedItems.map((item) => {
+                        const val = row.value(item);
+                        const delta = row.higher ? val - best : best - val;
+                        return (
+                          <td key={`${row.key}-${item.id || item.trend_name}`} className={`px-3 py-2 font-bold ${val === best ? "text-emerald-500" : "text-slate-600 dark:text-slate-300"}`}>
+                            {row.format(item)} {delta !== 0 ? <span className="text-[10px] text-slate-400">({row.higher ? "-" : "+"}{Math.abs(delta)})</span> : ""}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -691,6 +752,11 @@ function HeatmapTile({
         </h4>
         <ConfidenceBadge confidence={item.confidence} />
         <div className="mb-1">
+          <span className="inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-500">
+            Radar
+          </span>
+        </div>
+        <div className="mb-1">
           <span className={`inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${
             item.pricing?.decision === "Buy"
               ? "bg-emerald-500/10 text-emerald-500"
@@ -745,7 +811,7 @@ function HeatmapTile({
             }}
             className="rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase py-1"
           >
-            Research
+            Promote
           </button>
           <button
             onClick={(e) => {
