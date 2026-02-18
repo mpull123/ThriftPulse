@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Target, Plus, Info, Award, Hash, CheckSquare, Image as ImageIcon } from "lucide-react";
 import {
   getCompAgeLabel,
@@ -34,6 +34,46 @@ function inferTrendAngle(trendName: string): string {
   if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) return "Layering pieces are performing in current sell-through.";
   if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) return "Vintage-driven demand remains resilient.";
   return "Cross-category fashion interest is measurable.";
+}
+
+function inferBrandsForTrend(trendName: string, hookBrand?: string): string[] {
+  const t = String(trendName || "").toLowerCase();
+  const brands = new Set<string>();
+  const hooked = String(hookBrand || "").trim();
+  if (hooked) brands.add(hooked);
+
+  const add = (list: string[]) => list.forEach((b) => brands.add(b));
+
+  if (t.includes("denim") || t.includes("jean") || t.includes("double knee")) {
+    add(["Levi's", "Carhartt", "Wrangler", "Dickies", "Lee"]);
+  }
+  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
+    add(["Carhartt", "Patagonia", "Arc'teryx", "The North Face", "Columbia"]);
+  }
+  if (t.includes("boot")) {
+    add(["Dr. Martens", "Red Wing", "Timberland", "Blundstone", "Danner"]);
+  }
+  if (t.includes("sneaker") || t.includes("xt-6") || t.includes("shoe")) {
+    add(["Salomon", "Nike", "New Balance", "ASICS", "adidas"]);
+  }
+  if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("graphic")) {
+    add(["Russell Athletic", "Champion", "Carhartt", "Nike", "Hanes"]);
+  }
+  if (t.includes("cardigan") || t.includes("mohair") || t.includes("knit") || t.includes("sweater")) {
+    add(["Our Legacy", "J.Crew", "Ralph Lauren", "Pendleton", "Acne Studios"]);
+  }
+  if (t.includes("tabi")) {
+    add(["Maison Margiela", "Camper", "Vibram", "Repetto", "MIISTA"]);
+  }
+  if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) {
+    add(["Levi's", "Carhartt", "Ralph Lauren", "Tommy Hilfiger", "Nike"]);
+  }
+
+  if (brands.size === 0) {
+    add(["Levi's", "Carhartt", "Nike", "Ralph Lauren", "The North Face"]);
+  }
+
+  return [...brands].slice(0, 5);
 }
 
 function hashString(input: string): number {
@@ -235,20 +275,29 @@ function getBrandFallbackConfidence({
 export default function SectionScout({
   onAdd,
   onNodeSelect,
+  onOpenTrend,
   signals = [],
   compChecks = [],
   collectorJobs = [],
+  focusTerm = "",
 }: {
   onAdd: (node: any) => void;
   onNodeSelect: (node: any) => void;
+  onOpenTrend?: (term: string) => void;
   signals?: any[];
   compChecks?: CompCheck[];
   collectorJobs?: CollectorJob[];
+  focusTerm?: string;
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip">("all");
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
+
+  useEffect(() => {
+    const term = String(focusTerm || "").trim();
+    if (term) setSearchTerm(term);
+  }, [focusTerm]);
 
   const latestCollectorRun = getLatestCollectorRun(collectorJobs);
   const collectorRunAge = getRunAgeLabel(latestCollectorRun);
@@ -430,6 +479,7 @@ export default function SectionScout({
       decision_reason: plan.decisionReason,
       intel: getSignalIntel(s),
       what_to_buy: topTargets.length ? topTargets : ["Check tag era", "Verify construction details"],
+      brands_to_watch: inferBrandsForTrend(s?.trend_name, s?.hook_brand),
       brandRef: s?.hook_brand || null,
       compAgeLabel: getCompAgeLabel(latestComp),
       confidence,
@@ -699,6 +749,20 @@ export default function SectionScout({
                      </li>
                    ))}
                  </ul>
+                 {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
+                   <>
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic">
+                       <Hash size={12} className="mr-2 text-blue-500" /> Brands to Watch:
+                     </p>
+                     <ul className="list-disc pl-5 space-y-1.5">
+                       {node.brands_to_watch.slice(0, 3).map((brand: string, i: number) => (
+                         <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
+                           {brand}
+                         </li>
+                       ))}
+                     </ul>
+                   </>
+                 )}
               </div>
 
               <div className="mt-auto space-y-4 pt-6 border-t dark:border-slate-800">
@@ -741,6 +805,17 @@ export default function SectionScout({
                 >
                   View Details
                 </button>
+                {onOpenTrend && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenTrend(node.name);
+                    }}
+                    className="w-full py-3 bg-rose-500/10 text-rose-500 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-rose-500/20 transition-all"
+                  >
+                    Open in Trends
+                  </button>
+                )}
               </div>
             </div>
           ))}

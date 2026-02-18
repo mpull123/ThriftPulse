@@ -76,11 +76,13 @@ export default function SectionHeatmap({
   onAddTrend,
   signals = [],
   compChecks = [],
+  focusTerm = "",
 }: {
   onTrendClick: (trendName: string) => void;
   onAddTrend?: (node: any) => void;
   signals?: any[];
   compChecks?: CompCheck[];
+  focusTerm?: string;
 }) {
   const [data, setData] = useState<any[]>(signals);
   const [loading, setLoading] = useState(signals.length === 0);
@@ -91,6 +93,11 @@ export default function SectionHeatmap({
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
+
+  useEffect(() => {
+    const term = String(focusTerm || "").trim();
+    if (term) setSearchTerm(term);
+  }, [focusTerm]);
 
   // If props are passed (from parent fetch), use them
   useEffect(() => {

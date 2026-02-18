@@ -105,6 +105,7 @@ export default function DashboardPage() {
   const [selectedItem, setSelectedItem] = useState<any>(null); 
   const [selectedNode, setSelectedNode] = useState<any>(null); 
   const [trunk, setTrunk] = useState<any[]>([]);
+  const [crossPageFocus, setCrossPageFocus] = useState("");
 
   // --- REAL DATA STATE ---
   const [realInventory, setRealInventory] = useState<any[]>([]);
@@ -207,6 +208,10 @@ export default function DashboardPage() {
 
   const removeFromTrunk = (id: any) => setTrunk(trunk.filter(item => item.id !== id));
   const clearTrunk = () => setTrunk([]);
+  const openViewWithFocus = (view: string, focus?: string) => {
+    if (focus && String(focus).trim()) setCrossPageFocus(String(focus).trim());
+    setActiveView(view);
+  };
 
   // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
   const confirmFoundItem = async (trunkItem: any, storeName: string) => {
@@ -345,6 +350,8 @@ export default function DashboardPage() {
               collectorJobs={realCollectorJobs}
               onAdd={addToTrunk}
               onNodeSelect={setSelectedNode}
+              onOpenTrend={(term) => openViewWithFocus("analysis", term)}
+              focusTerm={crossPageFocus}
             />
           )}
           
@@ -374,7 +381,8 @@ export default function DashboardPage() {
               signals={realSignals}
               compChecks={realCompChecks}
               onAddTrend={addToTrunk}
-              onTrendClick={() => setActiveView("scout")}
+              onTrendClick={(trendName) => openViewWithFocus("scout", trendName)}
+              focusTerm={crossPageFocus}
             />
           )}
           
@@ -477,17 +485,45 @@ export default function DashboardPage() {
                 </div>
               )}
 
+              {Array.isArray(selectedNode.brands_to_watch) && selectedNode.brands_to_watch.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center">
+                    <Hash size={14} className="mr-2" /> Brands to Watch
+                  </h4>
+                  <ul className="space-y-2">
+                    {selectedNode.brands_to_watch.map((brand: string, i: number) => (
+                      <li key={i} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                        <span className="mr-2 leading-5 text-blue-500">•</span>
+                        <span>{brand}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="pt-8 border-t dark:border-slate-800 space-y-4">
                 <div className="flex justify-between items-center mb-4">
                   <span className="text-xs font-black uppercase tracking-widest text-slate-400">Target Entry</span>
                   <span className="text-3xl font-black text-slate-900 dark:text-white">${selectedNode.entry_price}</span>
                 </div>
-                <button 
-                  onClick={() => { addToTrunk(selectedNode); setSelectedNode(null); }}
-                  className="w-full py-5 bg-emerald-500 text-white rounded-2xl font-black uppercase italic text-sm tracking-widest hover:bg-emerald-600 transition-all shadow-xl"
-                >
-                  Add to Sourcing Trunk (Right Panel)
-                </button>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => { addToTrunk(selectedNode); setSelectedNode(null); }}
+                    className="w-full py-5 bg-emerald-500 text-white rounded-2xl font-black uppercase italic text-sm tracking-widest hover:bg-emerald-600 transition-all shadow-xl"
+                  >
+                    Add to Sourcing Trunk
+                  </button>
+                  <button
+                    onClick={() => {
+                      addToTrunk(selectedNode);
+                      openViewWithFocus("hunt", selectedNode?.name);
+                      setSelectedNode(null);
+                    }}
+                    className="w-full py-5 bg-blue-500 text-white rounded-2xl font-black uppercase italic text-sm tracking-widest hover:bg-blue-600 transition-all shadow-xl"
+                  >
+                    Add + Open Store Map
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -499,6 +535,17 @@ export default function DashboardPage() {
       {/* RIGHT SIDEBAR */}
       <aside className="w-96 h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative">
         <div className="flex flex-col h-full p-8">
+          {crossPageFocus && (
+            <div className="mb-4 rounded-2xl border border-blue-500/30 bg-blue-500/10 px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-widest text-blue-500">Shared Focus</p>
+              <p className="text-xs font-black italic text-slate-700 dark:text-slate-200 mt-1">{crossPageFocus}</p>
+              <div className="mt-3 flex gap-2">
+                <button onClick={() => openViewWithFocus("scout")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Research</button>
+                <button onClick={() => openViewWithFocus("analysis")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Trends</button>
+                <button onClick={() => setCrossPageFocus("")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase text-rose-500">Clear</button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between mb-8">
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
               <Briefcase size={14} /> Sourcing Trunk (Confirmation Panel)
