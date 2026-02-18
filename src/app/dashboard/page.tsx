@@ -15,12 +15,13 @@ import { ListingModal } from "@/components/dashboard/ListingModal";
 
 import { 
   Radar, LayoutDashboard, Wallet, Activity, 
-  LogOut, Map, LayoutGrid, Hash, Package, X, Briefcase, Sun, Moon, Monitor, CheckSquare, Info
+  LogOut, Map, LayoutGrid, Hash, Package, X, Briefcase, Sun, Moon, Monitor, CheckSquare, Info, ChevronLeft, ChevronRight
 } from "lucide-react";
 import Link from "next/link";
 import type { CollectorJob, CompCheck } from "@/lib/types";
 
 const NULL_WARNING_THRESHOLD = 0.5;
+const TRUNK_COLLAPSED_STORAGE_KEY = "thriftpulse_trunk_collapsed_v1";
 
 function splitIntelToBullets(intel: string): string[] {
   return String(intel || "")
@@ -106,6 +107,7 @@ export default function DashboardPage() {
   const [selectedNode, setSelectedNode] = useState<any>(null); 
   const [trunk, setTrunk] = useState<any[]>([]);
   const [crossPageFocus, setCrossPageFocus] = useState("");
+  const [isTrunkCollapsed, setIsTrunkCollapsed] = useState(false);
 
   // --- REAL DATA STATE ---
   const [realInventory, setRealInventory] = useState<any[]>([]);
@@ -129,7 +131,18 @@ export default function DashboardPage() {
   useEffect(() => {
     setMounted(true);
     fetchRealData();
+    try {
+      const raw = localStorage.getItem(TRUNK_COLLAPSED_STORAGE_KEY);
+      setIsTrunkCollapsed(raw === "1");
+    } catch {
+      setIsTrunkCollapsed(false);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    localStorage.setItem(TRUNK_COLLAPSED_STORAGE_KEY, isTrunkCollapsed ? "1" : "0");
+  }, [isTrunkCollapsed, mounted]);
 
   // --- FETCH REAL SUPABASE DATA ---
   async function fetchRealData() {
@@ -622,7 +635,22 @@ export default function DashboardPage() {
       </main>
 
       {/* RIGHT SIDEBAR */}
-      <aside className="w-96 h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative">
+      <aside className={`${isTrunkCollapsed ? "w-16" : "w-96"} h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative transition-all duration-200`}>
+        <button
+          onClick={() => setIsTrunkCollapsed((v) => !v)}
+          className="absolute -left-3 top-6 h-7 w-7 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex items-center justify-center z-50 shadow"
+          title={isTrunkCollapsed ? "Expand Sourcing Trunk" : "Collapse Sourcing Trunk"}
+        >
+          {isTrunkCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+        </button>
+        {isTrunkCollapsed ? (
+          <div className="h-full flex flex-col items-center pt-12">
+            <Briefcase size={18} className="text-slate-500" />
+            <p className="mt-3 [writing-mode:vertical-rl] rotate-180 text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Sourcing Trunk ({trunk.length})
+            </p>
+          </div>
+        ) : (
         <div className="flex flex-col h-full p-8">
           {crossPageFocus && (
             <div className="mb-4 rounded-2xl border border-blue-500/30 bg-blue-500/10 px-4 py-3">
@@ -696,6 +724,7 @@ export default function DashboardPage() {
             <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Generate Route ({trunk.length})</button>
           )}
         </div>
+        )}
       </aside>
 
       <ListingModal item={selectedItem} isOpen={!!selectedItem} onClose={() => setSelectedItem(null)} />
