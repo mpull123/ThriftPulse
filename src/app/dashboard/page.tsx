@@ -210,6 +210,11 @@ export default function DashboardPage() {
   const clearTrunk = () => setTrunk([]);
   const openViewWithFocus = (view: string, focus?: string) => {
     if (focus && String(focus).trim()) setCrossPageFocus(String(focus).trim());
+    else setCrossPageFocus("");
+    setActiveView(view);
+  };
+  const navigateView = (view: string) => {
+    setCrossPageFocus("");
     setActiveView(view);
   };
   const updateSignalStage = async (signalIds: string[], stage: "radar" | "decision" | "archived") => {
@@ -310,13 +315,13 @@ export default function DashboardPage() {
         </button>
 
         <nav className="space-y-1.5 flex-1">
-          <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={setActiveView} color="emerald" />
-          <NavButton label="Decision Lab" id="scout" icon={Radar} active={activeView} set={setActiveView} color="emerald" />
-          <NavButton label="Store Map" id="hunt" icon={Map} active={activeView} set={setActiveView} color="blue" />
-          <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={setActiveView} color="purple" />
-          <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={setActiveView} color="amber" />
-          <NavButton label="Radar" id="analysis" icon={Activity} active={activeView} set={setActiveView} color="rose" />
-          <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={setActiveView} color="emerald" />
+          <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={navigateView} color="emerald" />
+          <NavButton label="Decision Lab" id="scout" icon={Radar} active={activeView} set={navigateView} color="emerald" />
+          <NavButton label="Store Map" id="hunt" icon={Map} active={activeView} set={navigateView} color="blue" />
+          <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={navigateView} color="purple" />
+          <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={navigateView} color="amber" />
+          <NavButton label="Radar" id="analysis" icon={Activity} active={activeView} set={navigateView} color="rose" />
+          <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={navigateView} color="emerald" />
         </nav>
 
         <div className="pt-8 mt-auto border-t dark:border-slate-800 space-y-4">
@@ -344,19 +349,19 @@ export default function DashboardPage() {
               Refresh Data
             </button>
             <button
-              onClick={() => setActiveView("scout")}
+              onClick={() => navigateView("scout")}
               className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-500 border border-blue-500/30 hover:bg-blue-500/20 transition-colors"
             >
               Open Decision Lab
             </button>
             <button
-              onClick={() => setActiveView("hunt")}
+              onClick={() => navigateView("hunt")}
               className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-600 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
             >
               Open Store Map
             </button>
             <button
-              onClick={() => setActiveView("analysis")}
+              onClick={() => navigateView("analysis")}
               className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-500 border border-rose-500/30 hover:bg-rose-500/20 transition-colors"
             >
               Open Radar
@@ -438,9 +443,8 @@ export default function DashboardPage() {
               signals={radarSignals}
               compChecks={realCompChecks}
               onAddTrend={addToTrunk}
-              onTrendClick={(trendName, signalId) => {
+              onTrendClick={(_, signalId) => {
                 promoteSignalToDecisionLab(signalId);
-                openViewWithFocus("scout", trendName);
               }}
               onPromoteTrend={(signalId) => promoteSignalToDecisionLab(signalId)}
               focusTerm={crossPageFocus}

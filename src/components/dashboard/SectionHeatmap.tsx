@@ -185,7 +185,7 @@ export default function SectionHeatmap({
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
-    if (term) setSearchTerm(term);
+    setSearchTerm(term);
   }, [focusTerm]);
 
   useEffect(() => {
