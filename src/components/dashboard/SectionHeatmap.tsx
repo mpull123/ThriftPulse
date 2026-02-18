@@ -552,15 +552,22 @@ export default function SectionHeatmap({
         </div>
       </div>
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-        Compare selected: {compareIds.length}/4
+        Selected: {compareIds.length}/4
       </p>
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => void promoteSelected()}
           disabled={comparedItems.length === 0}
-          className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500 disabled:opacity-40"
+          className="px-4 py-2 rounded-xl text-[11px] font-black uppercase bg-blue-500 text-white disabled:opacity-40"
         >
-          Promote Selected
+          Promote Selected ({comparedItems.length})
+        </button>
+        <button
+          onClick={() => setCompareIds([])}
+          disabled={comparedItems.length === 0}
+          className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+        >
+          Clear Selected
         </button>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -759,6 +766,17 @@ function HeatmapTile({
           {item.heat_score || 0}%
         </span>
         <div className="flex items-center gap-1">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCompare();
+            }}
+            className={`px-2 py-1 rounded text-[9px] font-black uppercase ${
+              isCompared ? "bg-blue-500 text-white" : "bg-slate-900/10 dark:bg-white/10 text-slate-700 dark:text-slate-200"
+            }`}
+          >
+            {isCompared ? "Selected" : "Select"}
+          </button>
           {item.compStatus === "none" && <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 text-[8px] font-black uppercase">No Comps</span>}
           {item.compStatus === "stale" && <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-500 text-[8px] font-black uppercase">Stale</span>}
           {item.compStatus === "fresh" && <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 text-[8px] font-black uppercase">Fresh</span>}
@@ -814,7 +832,7 @@ function HeatmapTile({
             Updated {formatDateLabel(item.updated_at)}
           </span>
         </div>
-        <div className="mt-2 grid grid-cols-3 gap-1">
+        <div className="mt-2 grid grid-cols-2 gap-1">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -832,17 +850,6 @@ function HeatmapTile({
             className="rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase py-1"
           >
             Promote
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleCompare();
-            }}
-            className={`rounded-md text-[8px] font-black uppercase py-1 ${
-              isCompared ? "bg-blue-500/15 text-blue-500" : "bg-slate-900/10 dark:bg-white/10 text-slate-600 dark:text-slate-300"
-            }`}
-          >
-            {isCompared ? "Compared" : "Compare"}
           </button>
         </div>
       </div>
