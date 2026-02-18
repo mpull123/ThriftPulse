@@ -795,6 +795,36 @@ export default function SectionScout({
     [comparePool, selectedIds]
   );
 
+  const getSignalIdsForNode = (node: any): string[] => {
+    const directId = String(node?.signal_id || "").trim();
+    if (directId) return [directId];
+
+    const nodeName = String(node?.name || "").trim().toLowerCase();
+    if (!nodeName) return [];
+
+    if (String(node?.type || "") === "brand") {
+      return signals
+        .filter((s: any) => {
+          const id = String(s?.id || "").trim();
+          if (!id) return false;
+          const hookBrand = String(s?.hook_brand || "").trim().toLowerCase();
+          const trendName = String(s?.trend_name || "").trim().toLowerCase();
+          const track = String(s?.track || "").toLowerCase();
+          return hookBrand === nodeName || (track.includes("brand") && trendName === nodeName);
+        })
+        .map((s: any) => String(s.id));
+    }
+
+    return signals
+      .filter((s: any) => {
+        const id = String(s?.id || "").trim();
+        if (!id) return false;
+        const trendName = String(s?.trend_name || "").trim().toLowerCase();
+        return trendName === nodeName;
+      })
+      .map((s: any) => String(s.id));
+  };
+
   const toggleCompare = (nodeId: string) => {
     setCompareIds((prev) => {
       const id = String(nodeId);
@@ -833,8 +863,8 @@ export default function SectionScout({
 
   const demoteSelected = async () => {
     if (!onDemoteTrend) return;
-    for (const node of selectedNodes) {
-      const id = String(node?.signal_id || "").trim();
+    const ids = Array.from(new Set(selectedNodes.flatMap((node: any) => getSignalIdsForNode(node))));
+    for (const id of ids) {
       if (id) await onDemoteTrend(id);
     }
     setSelectedIds([]);
@@ -843,8 +873,8 @@ export default function SectionScout({
 
   const archiveSelected = async () => {
     if (!onArchiveTrend) return;
-    for (const node of selectedNodes) {
-      const id = String(node?.signal_id || "").trim();
+    const ids = Array.from(new Set(selectedNodes.flatMap((node: any) => getSignalIdsForNode(node))));
+    for (const id of ids) {
       if (id) await onArchiveTrend(id);
     }
     setSelectedIds([]);
