@@ -77,6 +77,44 @@ async function finishCollectorJob(jobId, status, errorMessage = null) {
   }
 }
 
+let rejectionLogTableMissing = false;
+async function writeTrendRejectionLogs(rows) {
+  const payload = (rows || [])
+    .map((row) => ({
+      collector_source: String(row?.collector_source || '').trim().toLowerCase(),
+      raw_title: row?.raw_title ? String(row.raw_title).slice(0, 400) : null,
+      candidate_term: row?.candidate_term ? String(row.candidate_term).slice(0, 120) : null,
+      rejection_reason: String(row?.rejection_reason || 'unknown').slice(0, 80),
+      metadata: row?.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+    }))
+    .filter((row) => row.collector_source && row.candidate_term);
+
+  if (!payload.length || rejectionLogTableMissing) return 0;
+  const chunkSize = 200;
+  let inserted = 0;
+  for (let i = 0; i < payload.length; i += chunkSize) {
+    const chunk = payload.slice(i, i + chunkSize);
+    try {
+      const { error } = await supabase.from('trend_rejection_log').insert(chunk);
+      if (error) {
+        const msg = String(error.message || '').toLowerCase();
+        if (msg.includes('relation') || msg.includes('does not exist')) {
+          rejectionLogTableMissing = true;
+          console.warn('trend_rejection_log table missing. Run setup SQL to enable rejection logging.');
+          return inserted;
+        }
+        console.warn('trend_rejection_log insert failed:', error.message);
+        return inserted;
+      }
+      inserted += chunk.length;
+    } catch (err) {
+      console.warn('trend_rejection_log insert threw:', err.message);
+      return inserted;
+    }
+  }
+  return inserted;
+}
+
 async function fetchEbayStats(term, fallbackPrice) {
   const ebayUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(term)}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1`;
   const response = await fetch(ebayUrl, {
@@ -426,15 +464,21 @@ function isBlockedNonFashionTerm(term) {
   return blocked.some((kw) => t.includes(kw));
 }
 
-function shouldUseTrendTerm(term) {
+function evaluateTrendTerm(term) {
   const cleaned = String(term || '').trim();
-  if (!cleaned) return false;
-  if (cleaned.length < 4 || cleaned.length > 60) return false;
-  if (isEditorialNoiseTerm(cleaned)) return false;
-  if (cleaned.split(/\s+/).length > 6) return false;
-  if (isBlockedNonFashionTerm(cleaned)) return false;
-  if (!isFashionTerm(cleaned)) return false;
-  return isSpecificFashionTerm(cleaned);
+  if (!cleaned) return { ok: false, reason: 'empty' };
+  if (cleaned.length < 4) return { ok: false, reason: 'too_short' };
+  if (cleaned.length > 60) return { ok: false, reason: 'too_long' };
+  if (isEditorialNoiseTerm(cleaned)) return { ok: false, reason: 'editorial_noise' };
+  if (cleaned.split(/\s+/).length > 6) return { ok: false, reason: 'too_many_words' };
+  if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion' };
+  if (!isFashionTerm(cleaned)) return { ok: false, reason: 'no_fashion_keyword' };
+  if (!isSpecificFashionTerm(cleaned)) return { ok: false, reason: 'not_specific_enough' };
+  return { ok: true, reason: 'accepted' };
+}
+
+function shouldUseTrendTerm(term) {
+  return evaluateTrendTerm(term).ok;
 }
 
 function normalizeTrendTerm(term) {
@@ -645,10 +689,21 @@ async function fetchFashionRssTerms() {
   });
   const rawTerms = [];
   const filteredTerms = [];
+  const rejectionRows = [];
   for (const title of headlines) {
     for (const term of extractTermsFromTrendTitle(title)) {
       rawTerms.push(term);
       if (isFashionTerm(term)) filteredTerms.push(term);
+      const verdict = evaluateTrendTerm(term);
+      if (!verdict.ok) {
+        rejectionRows.push({
+          collector_source: 'fashion_rss',
+          raw_title: title,
+          candidate_term: term,
+          rejection_reason: verdict.reason,
+          metadata: { stage: 'rss_term_filter' },
+        });
+      }
     }
   }
 
@@ -658,6 +713,9 @@ async function fetchFashionRssTerms() {
     keywordFiltered.filter(shouldUseTrendTerm).map(normalizeTrendTerm),
     Number(process.env.FASHION_RSS_BUCKET_CAP || 12)
   ).slice(0, Number(process.env.MAX_FASHION_RSS_TERMS || 320));
+  const rejectedLogged = await writeTrendRejectionLogs(
+    rejectionRows.slice(0, Number(process.env.MAX_REJECTION_LOG_ROWS_PER_SOURCE || 1500))
+  );
 
   return {
     rawTerms: uniqueRaw,
@@ -666,6 +724,7 @@ async function fetchFashionRssTerms() {
     successFeeds,
     failedFeeds,
     headlineCount: headlines.length,
+    rejectedLogged,
   };
 }
 
@@ -679,10 +738,21 @@ async function fetchGoogleNewsRssTerms() {
 
   const rawTerms = [];
   const filteredTerms = [];
+  const rejectionRows = [];
   for (const title of headlines) {
     for (const term of extractTermsFromTrendTitle(title)) {
       rawTerms.push(term);
       if (isFashionTerm(term)) filteredTerms.push(term);
+      const verdict = evaluateTrendTerm(term);
+      if (!verdict.ok) {
+        rejectionRows.push({
+          collector_source: 'google_news_rss',
+          raw_title: title,
+          candidate_term: term,
+          rejection_reason: verdict.reason,
+          metadata: { stage: 'rss_term_filter' },
+        });
+      }
     }
   }
 
@@ -692,6 +762,9 @@ async function fetchGoogleNewsRssTerms() {
     keywordFiltered.filter(shouldUseTrendTerm).map(normalizeTrendTerm),
     Number(process.env.GOOGLE_NEWS_BUCKET_CAP || 14)
   ).slice(0, Number(process.env.MAX_GOOGLE_NEWS_TERMS || 380));
+  const rejectedLogged = await writeTrendRejectionLogs(
+    rejectionRows.slice(0, Number(process.env.MAX_REJECTION_LOG_ROWS_PER_SOURCE || 1500))
+  );
 
   return {
     rawTerms: uniqueRaw,
@@ -700,6 +773,7 @@ async function fetchGoogleNewsRssTerms() {
     successFeeds,
     failedFeeds,
     headlineCount: headlines.length,
+    rejectedLogged,
   };
 }
 
@@ -1021,7 +1095,7 @@ async function syncMarketPulse() {
       await finishCollectorJob(
         fashionRssJobId,
         'success',
-        `Scanned ${rss.feedCount} fashion RSS feeds (${rss.successFeeds} ok, ${rss.failedFeeds} failed) and captured ${fashionRssTerms.length} terms from ${rss.headlineCount} headlines.`
+        `Scanned ${rss.feedCount} fashion RSS feeds (${rss.successFeeds} ok, ${rss.failedFeeds} failed) and captured ${fashionRssTerms.length} terms from ${rss.headlineCount} headlines. Logged ${Number(rss.rejectedLogged || 0)} rejected candidates.`
       );
     } catch (err) {
       fashionRssFailures += 1;
@@ -1041,7 +1115,7 @@ async function syncMarketPulse() {
       await finishCollectorJob(
         googleNewsJobId,
         'success',
-        `Scanned ${news.feedCount} Google News fashion RSS queries (${news.successFeeds} ok, ${news.failedFeeds} failed) and captured ${googleNewsTerms.length} terms from ${news.headlineCount} headlines.`
+        `Scanned ${news.feedCount} Google News fashion RSS queries (${news.successFeeds} ok, ${news.failedFeeds} failed) and captured ${googleNewsTerms.length} terms from ${news.headlineCount} headlines. Logged ${Number(news.rejectedLogged || 0)} rejected candidates.`
       );
     } catch (err) {
       googleNewsFailures += 1;
