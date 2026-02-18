@@ -336,18 +336,22 @@ export default function SectionScout({
   onAdd,
   onNodeSelect,
   onOpenTrend,
+  onDemoteTrend,
   signals = [],
   compChecks = [],
   collectorJobs = [],
   focusTerm = "",
+  allowFallback = true,
 }: {
   onAdd: (node: any) => void;
   onNodeSelect: (node: any) => void;
   onOpenTrend?: (term: string) => void;
+  onDemoteTrend?: (signalId?: string) => void;
   signals?: any[];
   compChecks?: CompCheck[];
   collectorJobs?: CollectorJob[];
   focusTerm?: string;
+  allowFallback?: boolean;
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
@@ -555,7 +559,7 @@ export default function SectionScout({
     };
   });
 
-  const brandNodes: any[] = liveBrandNodes.length > 0 ? liveBrandNodes : fallbackBrandNodes;
+  const brandNodes: any[] = liveBrandNodes.length > 0 ? liveBrandNodes : allowFallback ? fallbackBrandNodes : [];
 
   // 2. STYLE TRENDS (Merged: Live DB Signals + Hardcoded)
   // Convert DB signals into the Node format used by the UI
@@ -616,7 +620,7 @@ export default function SectionScout({
   });
 
   // Combine Live + Starter trends
-  const trendNodes = liveTrends.length > 0 ? liveTrends : [
+  const trendNodes = liveTrends.length > 0 ? liveTrends : allowFallback ? [
     { 
       id: 't1', type: 'style', name: "90s Gore-Tex Shells", source: "r/gorpcore", sentiment: "High Heat", mentions: 142,
       intel: "Users are praising 90s durability over modern 'thin' shells. Focus on Arc'teryx and Marmot.", heat: 98, entry_price: 220,
@@ -627,7 +631,7 @@ export default function SectionScout({
       ]
     },
     // ... (Your other hardcoded items remain as fallback if DB is empty)
-  ];
+  ] : [];
 
   const matchesCommonFilters = (node: any): boolean => {
     if (confidenceFilter !== "all" && node?.confidence !== confidenceFilter) return false;
@@ -1099,6 +1103,13 @@ export default function SectionScout({
             </div>
           ))}
         </div>
+        {visibleBrandNodes.length === 0 && (
+          <div className="mt-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center">
+            <p className="text-xs font-black uppercase tracking-widest text-slate-400">
+              No brand nodes promoted to Decision Lab yet.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* STYLE TRENDS */}
@@ -1242,6 +1253,7 @@ export default function SectionScout({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      onDemoteTrend?.(node.signal_id);
                       onOpenTrend(node.name);
                     }}
                     className="w-full py-3 bg-rose-500/10 text-rose-500 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-rose-500/20 transition-all"
@@ -1266,6 +1278,13 @@ export default function SectionScout({
             </div>
           ))}
         </div>
+        {visibleTrendNodes.length === 0 && (
+          <div className="mt-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center">
+            <p className="text-xs font-black uppercase tracking-widest text-slate-400">
+              No style trends promoted yet. Use Promote on Radar to move nodes here.
+            </p>
+          </div>
+        )}
       </section>
     </div>
   );

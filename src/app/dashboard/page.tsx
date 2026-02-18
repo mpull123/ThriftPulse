@@ -21,6 +21,7 @@ import Link from "next/link";
 import type { CollectorJob, CompCheck } from "@/lib/types";
 
 const NULL_WARNING_THRESHOLD = 0.5;
+const PROMOTED_SIGNALS_STORAGE_KEY = "thriftpulse_promoted_signal_ids_v1";
 
 function splitIntelToBullets(intel: string): string[] {
   return String(intel || "")
@@ -106,6 +107,7 @@ export default function DashboardPage() {
   const [selectedNode, setSelectedNode] = useState<any>(null); 
   const [trunk, setTrunk] = useState<any[]>([]);
   const [crossPageFocus, setCrossPageFocus] = useState("");
+  const [promotedSignalIds, setPromotedSignalIds] = useState<string[]>([]);
 
   // --- REAL DATA STATE ---
   const [realInventory, setRealInventory] = useState<any[]>([]);
@@ -129,7 +131,23 @@ export default function DashboardPage() {
   useEffect(() => {
     setMounted(true);
     fetchRealData();
+    try {
+      const raw = localStorage.getItem(PROMOTED_SIGNALS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setPromotedSignalIds(parsed.map((v) => String(v)));
+        }
+      }
+    } catch {
+      setPromotedSignalIds([]);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    localStorage.setItem(PROMOTED_SIGNALS_STORAGE_KEY, JSON.stringify(promotedSignalIds));
+  }, [promotedSignalIds, mounted]);
 
   // --- FETCH REAL SUPABASE DATA ---
   async function fetchRealData() {
@@ -212,6 +230,16 @@ export default function DashboardPage() {
     if (focus && String(focus).trim()) setCrossPageFocus(String(focus).trim());
     setActiveView(view);
   };
+  const promoteSignalToDecisionLab = (signalId?: string) => {
+    const id = String(signalId || "").trim();
+    if (!id) return;
+    setPromotedSignalIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
+  const demoteSignalToRadar = (signalId?: string) => {
+    const id = String(signalId || "").trim();
+    if (!id) return;
+    setPromotedSignalIds((prev) => prev.filter((v) => v !== id));
+  };
 
   // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
   const confirmFoundItem = async (trunkItem: any, storeName: string) => {
@@ -234,6 +262,8 @@ export default function DashboardPage() {
   };
 
   const hotSignalCount = realSignals.filter((s) => Number(s?.heat_score || 0) >= 85).length;
+  const decisionLabSignals = realSignals.filter((s: any) => promotedSignalIds.includes(String(s?.id || "")));
+  const radarSignals = realSignals.filter((s: any) => !promotedSignalIds.includes(String(s?.id || "")));
   const healthyCollectorRuns = realCollectorJobs.filter((j) => {
     const status = String(j?.status || "").toLowerCase();
     return status === "success" || status === "completed" || status === "ok";
@@ -312,7 +342,10 @@ export default function DashboardPage() {
             </button>
             <div className="ml-auto flex flex-wrap gap-2">
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                Signals: {realSignals.length}
+                Radar: {radarSignals.length}
+              </span>
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Decision: {decisionLabSignals.length}
               </span>
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                 Hot: {hotSignalCount}
@@ -334,7 +367,7 @@ export default function DashboardPage() {
           {activeView === "overview" && (
             <SectionOverview
               missions={realInventory}
-              signals={realSignals}
+              signals={radarSignals}
               stores={realStores}
               compChecks={realCompChecks}
               collectorJobs={realCollectorJobs}
@@ -345,13 +378,15 @@ export default function DashboardPage() {
           {/* RESEARCH: Now receives real Reddit Trends */}
           {activeView === "scout" && (
             <SectionScout
-              signals={realSignals}
+              signals={decisionLabSignals}
               compChecks={realCompChecks}
               collectorJobs={realCollectorJobs}
               onAdd={addToTrunk}
               onNodeSelect={setSelectedNode}
               onOpenTrend={(term) => openViewWithFocus("analysis", term)}
+              onDemoteTrend={(signalId) => demoteSignalToRadar(signalId)}
               focusTerm={crossPageFocus}
+              allowFallback={false}
             />
           )}
           
@@ -378,10 +413,13 @@ export default function DashboardPage() {
           {/* HEATMAP: Now receives real Reddit Trends */}
           {activeView === "analysis" && (
             <SectionHeatmap
-              signals={realSignals}
+              signals={radarSignals}
               compChecks={realCompChecks}
               onAddTrend={addToTrunk}
-              onTrendClick={(trendName) => openViewWithFocus("scout", trendName)}
+              onTrendClick={(trendName, signalId) => {
+                promoteSignalToDecisionLab(signalId);
+                openViewWithFocus("scout", trendName);
+              }}
               focusTerm={crossPageFocus}
             />
           )}

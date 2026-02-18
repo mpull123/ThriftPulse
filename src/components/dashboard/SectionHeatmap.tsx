@@ -159,7 +159,7 @@ export default function SectionHeatmap({
   compChecks = [],
   focusTerm = "",
 }: {
-  onTrendClick: (trendName: string) => void;
+  onTrendClick: (trendName: string, signalId?: string) => void;
   onAddTrend?: (node: any) => void;
   signals?: any[];
   compChecks?: CompCheck[];
@@ -669,7 +669,7 @@ export default function SectionHeatmap({
                viewMode={viewMode}
                isCompared={compareIds.includes(String(item.id || item.trend_name))}
                onToggleCompare={() => toggleCompare(item)}
-               onOpenResearch={() => onTrendClick(item.trend_name)}
+               onOpenResearch={() => onTrendClick(item.trend_name, String(item.id || ""))}
                onAddTrend={() =>
                  onAddTrend?.({
                    id: `trend-${item.id || item.trend_name}`,
