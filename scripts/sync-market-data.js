@@ -25,6 +25,15 @@ const DEFAULT_SUBREDDITS = [
   'SecondHandFinds'
 ];
 
+const FASHION_CORPUS_SOURCES = [
+  'https://www.highsnobiety.com/feed/',
+  'https://hypebeast.com/feed',
+  'https://www.gq.com/feed/rss',
+  'https://www.vogue.com/feed/rss',
+  'https://www.whowhatwear.com/rss',
+  'https://www.thecut.com/rss'
+];
+
 function getTargetSubreddits() {
   const fromEnv = String(process.env.REDDIT_SUBREDDITS || '')
     .split(',')
@@ -293,6 +302,10 @@ function decodeXmlEntities(text) {
     .replace(/&gt;/g, '>');
 }
 
+function compactWhitespace(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
 function extractTermsFromTrendTitle(title) {
   const cleaned = decodeXmlEntities(String(title || '')).trim();
   if (!cleaned) return [];
@@ -379,6 +392,90 @@ async function classifyFashionTermsWithAI(rawTerms) {
     ? payload.selected_terms.map((t) => String(t || '').trim()).filter(Boolean)
     : [];
   return [...new Set(selected)].filter(shouldUseTrendTerm);
+}
+
+async function fetchFashionCorpusHeadlines() {
+  const headlines = [];
+
+  for (const url of FASHION_CORPUS_SOURCES) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'thriftpulse-sync/1.0',
+          Accept: 'application/rss+xml, application/xml, text/html;q=0.9, */*;q=0.8'
+        }
+      });
+      const body = await res.text();
+      if (!res.ok) continue;
+
+      if (/<item>/i.test(body)) {
+        const rssTitles = [...body.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)]
+          .map((m) => compactWhitespace(decodeXmlEntities(m[1])))
+          .filter(Boolean);
+        headlines.push(...rssTitles);
+        continue;
+      }
+
+      const $ = cheerio.load(body);
+      const htmlTitles = [
+        ...$('h1,h2,h3,a[title]').map((_, el) => compactWhitespace($(el).text() || $(el).attr('title'))).get()
+      ].filter(Boolean);
+      headlines.push(...htmlTitles);
+    } catch (err) {
+      console.warn(`fashion corpus fetch failed (${url}):`, err.message);
+    }
+  }
+
+  return [...new Set(headlines)].filter((h) => h.length >= 8 && h.length <= 120).slice(0, 200);
+}
+
+async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTerms) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !Array.isArray(corpusHeadlines) || corpusHeadlines.length === 0) return [];
+
+  const seedTerms = (existingTerms || []).slice(0, 120);
+  const headlineSample = corpusHeadlines.slice(0, 120);
+  const maxCandidates = Math.max(50, Math.min(500, Number(process.env.MAX_AI_CANDIDATES || 250)));
+  const systemPrompt =
+    'You are a fashion trend researcher for resale markets. Return JSON only with key "candidates" as an array of concise fashion keyword phrases. Include garments, styles, aesthetics, materials, and brand-item combinations relevant to resale.';
+  const userPrompt = `Generate up to ${maxCandidates} fashion trend candidates.\nCurrent trend seeds:\n${JSON.stringify(seedTerms)}\n\nFashion headlines corpus:\n${JSON.stringify(headlineSample)}\n\nOutput JSON: {"candidates":["..."]}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini',
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
+    })
+  });
+
+  const bodyText = await res.text();
+  if (!res.ok) {
+    const snippet = bodyText.slice(0, 140).replace(/\s+/g, ' ');
+    throw new Error(`ai_candidate_gen_failed status=${res.status} body="${snippet}"`);
+  }
+
+  let payload = null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    payload = JSON.parse(parsed?.choices?.[0]?.message?.content || '{}');
+  } catch (err) {
+    throw new Error(`ai_candidate_gen_parse_failed ${err.message}`);
+  }
+
+  const candidates = Array.isArray(payload?.candidates)
+    ? payload.candidates.map((t) => compactWhitespace(t)).filter(Boolean)
+    : [];
+
+  return [...new Set(candidates)].filter(shouldUseTrendTerm).slice(0, maxCandidates);
 }
 
 async function fetchGoogleTrendsTerms() {
@@ -538,16 +635,19 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
 async function syncMarketPulse() {
   console.log("🚀 Starting Zero-API Market Sync...");
   const googleJobId = await startCollectorJob('google_trends');
+  const corpusJobId = await startCollectorJob('fashion_corpus_ai');
   const ebayJobId = await startCollectorJob('ebay');
   const redditJobId = await startCollectorJob('reddit');
   let ebayFailures = 0;
   let ebayNoSampleCount = 0;
   let googleFailures = 0;
+  let corpusFailures = 0;
   let redditFailures = 0;
   const redditFailureDetails = [];
 
   try {
     let googleTrendsTerms = [];
+    let corpusAiTerms = [];
     try {
       const { rawTerms, filteredTerms } = await fetchGoogleTrendsTerms();
       let aiTerms = null;
@@ -574,8 +674,39 @@ async function syncMarketPulse() {
       console.error('❌ Google Trends fetch failed:', err.message);
     }
 
+    try {
+      const { data: currentSignalsData } = await supabase
+        .from('market_signals')
+        .select('trend_name')
+        .order('updated_at', { ascending: false })
+        .limit(300);
+
+      const signalTerms = (currentSignalsData || [])
+        .map((r) => String(r.trend_name || '').trim())
+        .filter(Boolean);
+
+      const corpusHeadlines = await fetchFashionCorpusHeadlines();
+      corpusAiTerms = await generateFashionCandidatesFromCorpusAI(
+        corpusHeadlines,
+        signalTerms
+      );
+
+      await finishCollectorJob(
+        corpusJobId,
+        'success',
+        `Captured ${corpusHeadlines.length} headlines and generated ${corpusAiTerms.length} AI candidates.`
+      );
+    } catch (err) {
+      corpusFailures += 1;
+      await finishCollectorJob(corpusJobId, 'degraded', err.message);
+      console.error('❌ Fashion corpus AI generation failed:', err.message);
+    }
+
     const activeQueryPacks = await getActiveQueryPacks();
-    const discoveredTerms = mergeDiscoveredTerms(activeQueryPacks, googleTrendsTerms);
+    const discoveredTerms = mergeDiscoveredTerms(
+      activeQueryPacks,
+      [...googleTrendsTerms, ...corpusAiTerms]
+    );
 
     // 1. Pull existing signals from database
     const { data: initialSignals, error: sigError } = await supabase.from('market_signals').select('*');
@@ -690,6 +821,11 @@ async function syncMarketPulse() {
       await finishCollectorJob(googleJobId, 'degraded', err.message);
     } else {
       await finishCollectorJob(googleJobId, 'failed', err.message);
+    }
+    if (corpusFailures > 0) {
+      await finishCollectorJob(corpusJobId, 'degraded', err.message);
+    } else {
+      await finishCollectorJob(corpusJobId, 'failed', err.message);
     }
     await finishCollectorJob(redditJobId, 'failed', err.message);
     await finishCollectorJob(ebayJobId, 'failed', err.message);
