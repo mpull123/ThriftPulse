@@ -1024,9 +1024,9 @@ export default function SectionScout({
               className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-emerald-500/50`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-emerald-500" style={{ width: `${node.heat}%` }} />
-              <div className="flex justify-between items-start mb-6">
+              <div className="flex justify-between items-start gap-3 mb-6">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
@@ -1044,7 +1044,7 @@ export default function SectionScout({
                        </span>
                      )}
                   </div>
-                  <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words">{node.name}</h3>
+                  <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>
@@ -1164,9 +1164,9 @@ export default function SectionScout({
               className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-blue-500/50`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-blue-500" style={{ width: `${node.heat}%` }} />
-              <div className="flex justify-between items-start mb-6">
+              <div className="flex justify-between items-start gap-3 mb-6">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
@@ -1184,7 +1184,7 @@ export default function SectionScout({
                        </span>
                      )}
                   </div>
-                  <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words">{node.name}</h3>
+                  <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>

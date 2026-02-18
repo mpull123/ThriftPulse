@@ -754,18 +754,18 @@ function HeatmapTile({
 
   return (
     <div 
-      className={`relative ${viewMode === "compact" ? "aspect-square" : "aspect-auto min-h-[280px]"} rounded-2xl border transition-all duration-300 p-5 flex flex-col justify-between overflow-hidden group hover:scale-105 hover:shadow-xl
+      className={`relative ${viewMode === "compact" ? "aspect-auto min-h-[235px]" : "aspect-auto min-h-[300px]"} rounded-2xl border transition-all duration-300 p-5 flex flex-col justify-between overflow-hidden group hover:scale-105 hover:shadow-xl
         ${isHot ? 'border-emerald-500/50 shadow-lg shadow-emerald-500/10' : 'border-slate-200 dark:border-white/5'}
       `}
       style={{ backgroundColor: `rgba(16, 185, 129, ${intensity * 0.15})` }}
     >
       {isHot && <div className="absolute inset-0 bg-emerald-500/5 animate-pulse" />}
       
-      <div className="flex justify-between items-start relative z-10">
+      <div className="flex justify-between items-start gap-2 relative z-10">
         <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${isHot ? 'bg-emerald-500 text-black' : 'bg-black/10 dark:bg-white/10 text-slate-500'}`}>
           {item.heat_score || 0}%
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1 max-w-[70%]">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -785,7 +785,7 @@ function HeatmapTile({
       </div>
 
       <div className="relative z-10">
-        <h4 className="text-[11px] font-black dark:text-white uppercase italic leading-tight truncate mb-1 group-hover:text-emerald-500 transition-colors">
+        <h4 className="text-[11px] font-black dark:text-white uppercase italic leading-tight line-clamp-2 mb-1 group-hover:text-emerald-500 transition-colors">
           {item.trend_name}
         </h4>
         <ConfidenceBadge confidence={item.confidence} />
