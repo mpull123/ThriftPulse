@@ -24,15 +24,36 @@ function extractTrendTargets(signal: any): string[] {
   return [...targets].filter(Boolean).slice(0, 10);
 }
 
+function inferTrendAngle(trendName: string): string {
+  const t = String(trendName || "").toLowerCase();
+  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) return "Outerwear demand is active.";
+  if (t.includes("jean") || t.includes("denim") || t.includes("cargo") || t.includes("pants")) return "Bottoms category velocity is holding steady.";
+  if (t.includes("boot") || t.includes("sneaker") || t.includes("loafer")) return "Footwear resale interest is elevated.";
+  if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) return "Layering pieces are performing in current sell-through.";
+  if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) return "Vintage-driven demand remains resilient.";
+  return "Cross-category fashion interest is measurable.";
+}
+
 function getSignalIntel(signal: any): string {
   const sentiment = String(signal?.market_sentiment || "").trim();
   const risk = String(signal?.risk_factor || "").trim();
   const brand = String(signal?.hook_brand || "").trim();
+  const trendName = String(signal?.trend_name || "").trim();
+  const heat = Number(signal?.heat_score || 0);
+  const price = Number(signal?.exit_price || 0);
 
   const parts = [];
   if (sentiment) parts.push(sentiment);
   if (brand) parts.push(`Brand watch: ${brand}.`);
   if (risk) parts.push(`Risk: ${risk}.`);
+  if (!sentiment) {
+    parts.push(inferTrendAngle(trendName));
+    if (trendName) parts.push(`Signal focus: ${trendName}.`);
+    if (price > 0) parts.push(`Current resale target centers near $${Math.round(price)}.`);
+    if (heat >= 85) parts.push("Momentum is currently high.");
+    else if (heat >= 70) parts.push("Momentum is stable to rising.");
+    else parts.push("Momentum is early but monitorable.");
+  }
 
   return parts.join(" ") || "Live trend signal from eBay + fashion source pipeline.";
 }
