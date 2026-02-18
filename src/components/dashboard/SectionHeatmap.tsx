@@ -8,6 +8,7 @@ import {
   isCompStale,
 } from "@/lib/marketIntel";
 import type { CompCheck, ConfidenceLevel } from "@/lib/types";
+type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
 
 function hashString(input: string): number {
   let hash = 0;
@@ -71,6 +72,68 @@ function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
   return "low";
 }
 
+function toDollar(value: number): number {
+  return Math.max(0, Math.round(Number(value || 0)));
+}
+
+function getConfidenceReason({
+  latestComp,
+  confidence,
+  mentions,
+}: {
+  latestComp: CompCheck | null;
+  confidence: ConfidenceLevel;
+  mentions: number;
+}): string {
+  const sample = Number(latestComp?.sample_size || 0);
+  if (!latestComp) {
+    if (mentions >= 120) return "No comps yet, but strong mentions support monitoring.";
+    return "No recent comp checks, so confidence stays lower.";
+  }
+  if (sample >= 8 && confidence === "high") return "Fresh comp sample supports high confidence.";
+  if (sample >= 4 && confidence !== "low") return "Comp sample is moderate and usable.";
+  return "Comp sample is limited, so confidence is capped.";
+}
+
+function formatDateLabel(value: string | null | undefined): string {
+  if (!value) return "Unknown";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "Unknown";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function buildPriceSnapshot({
+  exitPrice,
+  confidence,
+  mentions,
+  latestComp,
+}: {
+  exitPrice: number;
+  confidence: ConfidenceLevel;
+  mentions: number;
+  latestComp: CompCheck | null;
+}) {
+  const baseSale = Math.max(15, toDollar(exitPrice));
+  const rangePct = confidence === "high" ? 0.08 : confidence === "med" ? 0.12 : 0.18;
+  const saleLow = Math.max(10, toDollar(baseSale * (1 - rangePct)));
+  const saleHigh = Math.max(saleLow, toDollar(baseSale * (1 + rangePct)));
+
+  const feeRate = 0.13;
+  const shippingCost = 7;
+  const prepCost = 3;
+  const netAfterFixed = Math.max(0, baseSale * (1 - feeRate) - shippingCost - prepCost);
+  const targetBuy = Math.max(4, Math.min(60, toDollar(netAfterFixed * 0.65)));
+  const expectedProfit = Math.max(0, toDollar(netAfterFixed - targetBuy));
+  const weakEvidence = !latestComp && mentions < 80;
+
+  let decision: DecisionLabel = "Maybe";
+  if (weakEvidence) decision = "Watchlist";
+  else if (expectedProfit >= 20) decision = "Buy";
+  else if (expectedProfit < 10) decision = "Skip";
+
+  return { saleLow, saleHigh, targetBuy, expectedProfit, decision };
+}
+
 export default function SectionHeatmap({
   onTrendClick,
   onAddTrend,
@@ -126,11 +189,19 @@ export default function SectionHeatmap({
     const confidence = latestComp
       ? compConfidence
       : getFallbackConfidence(item, signalScore);
+    const pricing = buildPriceSnapshot({
+      exitPrice: Number(item?.exit_price || 0),
+      confidence,
+      mentions,
+      latestComp,
+    });
     return {
       ...item,
       mentions,
       signalScore,
       confidence,
+      confidenceReason: getConfidenceReason({ latestComp, confidence, mentions }),
+      pricing,
       inferredType: String(item?.track || "").toLowerCase().includes("brand") ? "brand" : "style",
       compStatus: !latestComp ? "none" : isCompStale(latestComp) ? "stale" : "fresh",
     };
@@ -285,7 +356,21 @@ export default function SectionHeatmap({
                    type: "style",
                    name: item.trend_name,
                    entry_price: Number(item.exit_price || 0),
+                   target_buy: Number(item.pricing?.targetBuy || 0),
+                   expected_sale: Number(item.exit_price || 0),
+                   expected_sale_low: Number(item.pricing?.saleLow || 0),
+                   expected_sale_high: Number(item.pricing?.saleHigh || 0),
+                   expected_profit: Number(item.pricing?.expectedProfit || 0),
                    heat: Number(item.heat_score || 0),
+                   decision: item.pricing?.decision,
+                   confidence: item.confidence,
+                   confidence_reason: item.confidenceReason,
+                   source_counts: {
+                     ebay: Number(item?.ebay_sample_count || 0),
+                     google: Number(item?.google_trend_hits || 0),
+                     ai: Number(item?.ai_corpus_hits || 0),
+                   },
+                   pricing_assumptions: "Assumes 13% fees, $7 shipping, $3 prep, used-condition pricing.",
                    intel:
                      String(item.market_sentiment || "").trim() ||
                      "Trend surfaced via live market pipeline.",
@@ -340,6 +425,19 @@ function HeatmapTile({
           {item.trend_name}
         </h4>
         <ConfidenceBadge confidence={item.confidence} />
+        <div className="mb-1">
+          <span className={`inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${
+            item.pricing?.decision === "Buy"
+              ? "bg-emerald-500/10 text-emerald-500"
+              : item.pricing?.decision === "Watchlist"
+                ? "bg-blue-500/10 text-blue-500"
+                : item.pricing?.decision === "Skip"
+                  ? "bg-rose-500/10 text-rose-500"
+                  : "bg-amber-500/10 text-amber-500"
+          }`}>
+            {item.pricing?.decision || "Maybe"}
+          </span>
+        </div>
         <div className="mb-1 flex flex-wrap gap-1">
           <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase text-slate-600 dark:text-slate-300">eBay {item.ebay_sample_count || 0}</span>
           <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase text-slate-600 dark:text-slate-300">Google {item.google_trend_hits || 0}</span>
@@ -349,9 +447,18 @@ function HeatmapTile({
           <TrendingUp size={10} className={isHot ? 'text-emerald-500' : 'text-slate-600'} />
           <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">Mentions: {item.mentions || 0}</span>
         </div>
+        <p className="mt-1 text-[8px] font-black uppercase tracking-wider text-slate-500">
+          Buy ≤ ${item.pricing?.targetBuy || 0} • Sale ${item.pricing?.saleLow || 0}-${item.pricing?.saleHigh || 0}
+        </p>
+        <p className="mt-1 text-[8px] font-bold text-slate-500 line-clamp-2">
+          {item.confidenceReason}
+        </p>
         <div className="mt-1">
           <span className="inline-flex px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200">
             Signal {item.signalScore || 0}
+          </span>
+          <span className="ml-1 inline-flex px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200">
+            Updated {formatDateLabel(item.updated_at)}
           </span>
         </div>
         <div className="mt-2 grid grid-cols-2 gap-1">

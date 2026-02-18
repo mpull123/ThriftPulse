@@ -9,7 +9,7 @@ import {
   getRunAgeLabel,
 } from "@/lib/marketIntel";
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
-type DecisionLabel = "Buy" | "Maybe" | "Skip";
+type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
 
 function extractTrendTargets(signal: any): string[] {
   const targets = new Set<string>();
@@ -173,18 +173,49 @@ function formatUsd(value: number): string {
   return `$${toDollar(value)}`;
 }
 
+function formatDateLabel(value: string | null | undefined): string {
+  if (!value) return "Unknown";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "Unknown";
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function getConfidenceReason({
+  latestComp,
+  confidence,
+  mentions,
+}: {
+  latestComp: CompCheck | null;
+  confidence: ConfidenceLevel;
+  mentions: number;
+}): string {
+  const sample = Number(latestComp?.sample_size || 0);
+  if (!latestComp) {
+    if (mentions >= 120) return "No comps yet, but strong multi-source mentions support monitoring.";
+    return "No recent comp checks, so this stays lower confidence.";
+  }
+  if (sample >= 8 && confidence === "high") return "Fresh comp sample is strong and supports high confidence.";
+  if (sample >= 4 && confidence !== "low") return "Comp sample is usable; confidence is moderate.";
+  return "Comp sample is light, so confidence is capped until more checks land.";
+}
+
 function buildPricePlan({
   entryPrice,
   heat,
   confidence,
   riskText,
   latestComp,
+  mentions,
 }: {
   entryPrice: number;
   heat: number;
   confidence: ConfidenceLevel;
   riskText?: string;
   latestComp?: CompCheck | null;
+  mentions?: number;
 }) {
   // Used-goods pricing model:
   // - entryPrice starts from market sold comps.
@@ -219,7 +250,12 @@ function buildPricePlan({
 
   let decision: DecisionLabel = "Maybe";
   let decisionReason = "Used-goods upside looks fair, but confirm condition in-store.";
-  if (expectedProfit >= 20 && profitMargin >= 0.28 && !(confidence === "low" && highRisk)) {
+  const evidenceMentions = Number(mentions || 0);
+  const weakEvidence = !latestComp && evidenceMentions < 80;
+  if (weakEvidence) {
+    decision = "Watchlist";
+    decisionReason = "Early signal with limited proof. Track it before committing buy budget.";
+  } else if (expectedProfit >= 20 && profitMargin >= 0.28 && !(confidence === "low" && highRisk)) {
     decision = "Buy";
     decisionReason = "Healthy used-resale spread after fees, shipping, and prep.";
   } else if (expectedProfit < 10 || profitMargin < 0.16 || (confidence === "low" && highRisk)) {
@@ -227,14 +263,22 @@ function buildPricePlan({
     decisionReason = "Used-condition margin is thin or risk-adjusted downside is too high.";
   }
 
+  const rangePct = confidence === "high" ? 0.08 : confidence === "med" ? 0.12 : 0.18;
+  const saleLow = Math.max(10, toDollar(expectedSale * (1 - rangePct)));
+  const saleHigh = Math.max(saleLow, toDollar(expectedSale * (1 + rangePct)));
+  const assumptions = `Assumes 13% fees, $7 shipping, $3 prep, used-condition pricing${highRisk ? ", plus risk buffer" : ""}.`;
+
   return {
     targetBuy,
     expectedSale,
+    saleLow,
+    saleHigh,
     expectedProfit,
     decision,
     decisionReason,
     compLow: toDollar(compLow),
     compHigh: toDollar(compHigh),
+    assumptions,
   };
 }
 
@@ -291,7 +335,7 @@ export default function SectionScout({
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
-  const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip">("all");
+  const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip" | "Watchlist">("all");
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
 
   useEffect(() => {
@@ -412,7 +456,9 @@ export default function SectionScout({
       confidence: node.latestComp ? compConfidence : fallbackConfidence,
       riskText,
       latestComp: node.latestComp,
+      mentions: Math.max(10, node.what.size * 4),
     });
+    const mentions = Math.max(10, node.what.size * 4);
 
     return {
       id: node.id,
@@ -421,9 +467,16 @@ export default function SectionScout({
       heat: avgHeat,
       source: "Live Brand Monitor",
       sentiment: avgHeat > 80 ? "Surging" : "Stable",
-      mentions: Math.max(10, node.what.size * 4),
+      mentions,
       confidence: node.latestComp ? compConfidence : fallbackConfidence,
+      confidence_reason: getConfidenceReason({
+        latestComp: node.latestComp,
+        confidence: node.latestComp ? compConfidence : fallbackConfidence,
+        mentions,
+      }),
       compAgeLabel: getCompAgeLabel(node.latestComp),
+      last_updated_at: null,
+      source_counts: { ebay: 0, google: 0, ai: 0, discovery: 0 },
       collectorRunAge,
       intel:
         [...node.notes].slice(0, 2).join(" ") ||
@@ -431,7 +484,10 @@ export default function SectionScout({
       entry_price: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
+      expected_sale_low: plan.saleLow,
+      expected_sale_high: plan.saleHigh,
       expected_profit: plan.expectedProfit,
+      pricing_assumptions: plan.assumptions,
       comp_low: plan.compLow,
       comp_high: plan.compHigh,
       decision: plan.decision,
@@ -457,7 +513,9 @@ export default function SectionScout({
       confidence,
       riskText: s.risk_factor || "",
       latestComp,
+      mentions: getTrendMentions(s, latestComp),
     });
+    const mentions = getTrendMentions(s, latestComp);
 
     return {
       id: `live-${s.id}`,
@@ -467,12 +525,15 @@ export default function SectionScout({
       heat: s.heat_score || 50,
       source: s?.track || "Live Monitor",
       sentiment: s.heat_score > 80 ? "Surging" : "Stable",
-      mentions: getTrendMentions(s, latestComp),
+      mentions,
       signalScore,
       entry_price: s.exit_price || 0,
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
+      expected_sale_low: plan.saleLow,
+      expected_sale_high: plan.saleHigh,
       expected_profit: plan.expectedProfit,
+      pricing_assumptions: plan.assumptions,
       comp_low: plan.compLow,
       comp_high: plan.compHigh,
       decision: plan.decision,
@@ -483,6 +544,14 @@ export default function SectionScout({
       brandRef: s?.hook_brand || null,
       compAgeLabel: getCompAgeLabel(latestComp),
       confidence,
+      confidence_reason: getConfidenceReason({ latestComp, confidence, mentions }),
+      last_updated_at: s?.updated_at || s?.created_at || null,
+      source_counts: {
+        ebay: Number(s?.ebay_sample_count || 0),
+        google: Number(s?.google_trend_hits || 0),
+        ai: Number(s?.ai_corpus_hits || 0),
+        discovery: Number(s?.ebay_discovery_hits || 0),
+      },
       collectorRunAge,
     };
   });
@@ -560,12 +629,13 @@ export default function SectionScout({
           </select>
           <select
             value={decisionFilter}
-            onChange={(e) => setDecisionFilter(e.target.value as "all" | "Buy" | "Maybe" | "Skip")}
+            onChange={(e) => setDecisionFilter(e.target.value as "all" | "Buy" | "Maybe" | "Skip" | "Watchlist")}
             className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
           >
             <option value="all">All Decisions</option>
             <option value="Buy">Buy</option>
             <option value="Maybe">Maybe</option>
+            <option value="Watchlist">Watchlist</option>
             <option value="Skip">Skip</option>
           </select>
           <select
@@ -608,6 +678,8 @@ export default function SectionScout({
                            ? "bg-emerald-500/10 text-emerald-500"
                            : node.decision === "Maybe"
                              ? "bg-amber-500/10 text-amber-500"
+                             : node.decision === "Watchlist"
+                               ? "bg-blue-500/10 text-blue-500"
                              : "bg-rose-500/10 text-rose-500"
                        }`}>
                          {node.decision}
@@ -644,7 +716,17 @@ export default function SectionScout({
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Used Pricing</p>
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
-                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ~ ${formatUsd(node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                  </p>
+                  {node.pricing_assumptions && <p className="mt-1 text-[9px] font-bold text-slate-500">{node.pricing_assumptions}</p>}
+                </div>
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
+                  <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                    {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
+                  </p>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
                   </p>
                 </div>
                 <div className="flex items-center justify-between">
@@ -713,6 +795,8 @@ export default function SectionScout({
                            ? "bg-emerald-500/10 text-emerald-500"
                            : node.decision === "Maybe"
                              ? "bg-amber-500/10 text-amber-500"
+                             : node.decision === "Watchlist"
+                               ? "bg-blue-500/10 text-blue-500"
                              : "bg-rose-500/10 text-rose-500"
                        }`}>
                          {node.decision}
@@ -769,7 +853,20 @@ export default function SectionScout({
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Used Pricing</p>
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
-                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ~ ${formatUsd(node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                  </p>
+                  {node.pricing_assumptions && <p className="mt-1 text-[9px] font-bold text-slate-500">{node.pricing_assumptions}</p>}
+                </div>
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
+                  <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                    {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
+                  </p>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Sources: eBay {node.source_counts?.ebay ?? 0} • Google {node.source_counts?.google ?? 0} • AI {node.source_counts?.ai ?? 0}
+                  </p>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
                   </p>
                 </div>
                 <div className="flex items-center justify-between">

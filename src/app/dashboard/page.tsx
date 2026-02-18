@@ -421,6 +421,8 @@ export default function DashboardPage() {
                           ? "bg-emerald-500/10 text-emerald-500"
                           : selectedNode.decision === "Maybe"
                             ? "bg-amber-500/10 text-amber-500"
+                            : selectedNode.decision === "Watchlist"
+                              ? "bg-blue-500/10 text-blue-500"
                             : "bg-rose-500/10 text-rose-500"
                       }`}>
                         {selectedNode.decision}
@@ -456,7 +458,29 @@ export default function DashboardPage() {
                     Comp Range: ${selectedNode.comp_low || 0} - ${selectedNode.comp_high || 0}
                   </p>
                 )}
+                {(selectedNode.expected_sale_low || selectedNode.expected_sale_high) && (
+                  <p className="mt-2 text-[11px] font-black uppercase tracking-widest text-slate-500">
+                    Likely Sale: ${selectedNode.expected_sale_low || selectedNode.expected_sale || 0} - ${selectedNode.expected_sale_high || selectedNode.expected_sale || 0}
+                  </p>
+                )}
+                {selectedNode.pricing_assumptions && (
+                  <p className="mt-2 text-xs font-bold italic text-slate-500">{selectedNode.pricing_assumptions}</p>
+                )}
               </div>
+
+              {(selectedNode.confidence_reason || selectedNode.last_updated_at || selectedNode.source_counts) && (
+                <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Why This Score</h4>
+                  {selectedNode.confidence_reason && (
+                    <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">{selectedNode.confidence_reason}</p>
+                  )}
+                  {selectedNode.source_counts && (
+                    <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Sources: eBay {selectedNode.source_counts.ebay || 0} • Google {selectedNode.source_counts.google || 0} • AI {selectedNode.source_counts.ai || 0}
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Sourcing Intelligence</h4>
