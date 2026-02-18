@@ -51,6 +51,21 @@ function getFallbackConfidence(signal: any): ConfidenceLevel {
     (hasBrand ? 1 : 0) +
     (heat >= 80 ? 1 : 0);
 
+  if (heat >= 88 || score >= 4) return "high";
+  if (heat >= 70 || score >= 2) return "med";
+  return "low";
+}
+
+function getBrandFallbackConfidence({
+  avgHeat,
+  evidenceCount,
+  hasIntel,
+}: {
+  avgHeat: number;
+  evidenceCount: number;
+  hasIntel: boolean;
+}): ConfidenceLevel {
+  const score = (avgHeat >= 80 ? 2 : avgHeat >= 70 ? 1 : 0) + (evidenceCount >= 4 ? 2 : evidenceCount >= 2 ? 1 : 0) + (hasIntel ? 1 : 0);
   if (score >= 4) return "high";
   if (score >= 2) return "med";
   return "low";
@@ -169,6 +184,12 @@ export default function SectionScout({
 
   const liveBrandNodes = [...liveBrandMap.values()].map((node) => {
     const avgHeat = node.heatCount ? Math.round(node.heatTotal / node.heatCount) : 70;
+    const compConfidence = getConfidenceFromComp(node.latestComp);
+    const fallbackConfidence = getBrandFallbackConfidence({
+      avgHeat,
+      evidenceCount: node.what.size,
+      hasIntel: node.notes.size > 0,
+    });
     return {
       id: node.id,
       type: "brand",
@@ -177,7 +198,7 @@ export default function SectionScout({
       source: "Live Brand Monitor",
       sentiment: avgHeat > 80 ? "Surging" : "Stable",
       mentions: Math.max(10, node.what.size * 4),
-      confidence: getConfidenceFromComp(node.latestComp),
+      confidence: node.latestComp ? compConfidence : fallbackConfidence,
       compAgeLabel: getCompAgeLabel(node.latestComp),
       collectorRunAge,
       intel:
