@@ -337,6 +337,8 @@ export default function SectionScout({
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip" | "Watchlist">("all");
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
+  const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
+  const [compareIds, setCompareIds] = useState<string[]>([]);
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
@@ -604,13 +606,32 @@ export default function SectionScout({
     [trendNodes, confidenceFilter, decisionFilter, searchTerm, sortMode]
   );
 
+  const comparePool = useMemo(
+    () => [...visibleBrandNodes, ...visibleTrendNodes],
+    [visibleBrandNodes, visibleTrendNodes]
+  );
+
+  const comparedNodes = useMemo(
+    () => comparePool.filter((node: any) => compareIds.includes(String(node.id))),
+    [comparePool, compareIds]
+  );
+
+  const toggleCompare = (nodeId: string) => {
+    setCompareIds((prev) => {
+      const id = String(nodeId);
+      if (prev.includes(id)) return prev.filter((v) => v !== id);
+      if (prev.length >= 4) return prev;
+      return [...prev, id];
+    });
+  };
+
   return (
     <div className="space-y-20 text-left pb-24">
       <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
           Research Filters
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
           <input
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -647,11 +668,43 @@ export default function SectionScout({
             <option value="mentions">Sort: Mentions</option>
             <option value="profit">Sort: Profit</option>
           </select>
+          <select
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value as "compact" | "detailed")}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value="detailed">View: Detailed</option>
+            <option value="compact">View: Compact</option>
+          </select>
         </div>
         <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
           Showing {visibleBrandNodes.length} brand nodes and {visibleTrendNodes.length} style trends
         </p>
+        <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
+          Compare selected: {compareIds.length}/4
+        </p>
       </section>
+
+      {comparedNodes.length > 0 && (
+        <section className="rounded-3xl border border-blue-500/30 bg-blue-500/5 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h5 className="text-xs font-black uppercase tracking-widest text-blue-500">Compare Tray ({comparedNodes.length})</h5>
+            <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            {comparedNodes.map((node: any) => (
+              <div key={`cmp-${node.id}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
+                <p className="text-[10px] font-black uppercase text-slate-500">{node.type}</p>
+                <p className="text-sm font-black italic text-slate-900 dark:text-white mt-1 line-clamp-2">{node.name}</p>
+                <p className="mt-2 text-[10px] font-black text-slate-500">Heat {node.heat || 0} • Mentions {formatMentions(node.mentions || 0)}</p>
+                <p className="text-[10px] font-black text-slate-500">Buy ≤ {formatUsd(node.target_buy || 0)}</p>
+                <p className="text-[10px] font-black text-slate-500">Sale {formatUsd(node.expected_sale_low || node.expected_sale || 0)}-{formatUsd(node.expected_sale_high || node.expected_sale || 0)}</p>
+                <p className="text-[10px] font-black text-slate-500">Net +{formatUsd(node.expected_profit || 0)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* BRAND NODES */}
       <section>
@@ -664,7 +717,7 @@ export default function SectionScout({
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
-              className="group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] p-10 transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-emerald-500/50"
+              className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-emerald-500/50`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-emerald-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start mb-6">
@@ -693,6 +746,7 @@ export default function SectionScout({
                   <p className="text-lg font-black italic text-emerald-500 leading-none tabular-nums">{formatMentions(node.mentions)}</p>
                 </div>
               </div>
+              {viewMode === "detailed" && (
               <div className="bg-emerald-500/5 border border-emerald-500/10 p-6 rounded-3xl mb-8 flex-1">
                  {node.compAgeLabel && (
                    <div className="mb-3">
@@ -712,6 +766,7 @@ export default function SectionScout({
                   ))}
                  </ul>
               </div>
+              )}
               <div className="mt-auto space-y-4">
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Used Pricing</p>
@@ -762,6 +817,19 @@ export default function SectionScout({
                 >
                   View Details
                 </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCompare(String(node.id));
+                  }}
+                  className={`w-full py-3 rounded-2xl font-black uppercase italic text-[11px] tracking-widest transition-all ${
+                    compareIds.includes(String(node.id))
+                      ? "bg-blue-500/15 text-blue-500"
+                      : "bg-slate-200/60 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                  }`}
+                >
+                  {compareIds.includes(String(node.id)) ? "Compared" : "Compare"}
+                </button>
               </div>
             </div>
           ))}
@@ -781,7 +849,7 @@ export default function SectionScout({
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
-              className="group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] p-10 transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-blue-500/50"
+              className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-blue-500/50`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-blue-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start mb-6">
@@ -811,6 +879,7 @@ export default function SectionScout({
                 </div>
               </div>
               
+              {viewMode === "detailed" && (
               <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl mb-6 border border-slate-100 dark:border-slate-800">
                  {node.compAgeLabel && (
                    <div className="mb-3">
@@ -848,6 +917,7 @@ export default function SectionScout({
                    </>
                  )}
               </div>
+              )}
 
               <div className="mt-auto space-y-4 pt-6 border-t dark:border-slate-800">
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
@@ -913,6 +983,19 @@ export default function SectionScout({
                     Open in Trends
                   </button>
                 )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCompare(String(node.id));
+                  }}
+                  className={`w-full py-3 rounded-2xl font-black uppercase italic text-[11px] tracking-widest transition-all ${
+                    compareIds.includes(String(node.id))
+                      ? "bg-blue-500/15 text-blue-500"
+                      : "bg-slate-200/60 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                  }`}
+                >
+                  {compareIds.includes(String(node.id)) ? "Compared" : "Compare"}
+                </button>
               </div>
             </div>
           ))}

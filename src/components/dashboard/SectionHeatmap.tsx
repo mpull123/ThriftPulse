@@ -156,6 +156,8 @@ export default function SectionHeatmap({
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
+  const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
+  const [compareIds, setCompareIds] = useState<string[]>([]);
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
@@ -239,6 +241,16 @@ export default function SectionHeatmap({
   const avgMentions = visibleData.length
     ? Math.round(visibleData.reduce((sum, item) => sum + (item.mentions || 0), 0) / visibleData.length)
     : 0;
+  const comparedItems = visibleData.filter((item) => compareIds.includes(String(item.id || item.trend_name)));
+
+  const toggleCompare = (item: any) => {
+    const id = String(item.id || item.trend_name);
+    setCompareIds((prev) => {
+      if (prev.includes(id)) return prev.filter((v) => v !== id);
+      if (prev.length >= 4) return prev;
+      return [...prev, id];
+    });
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
@@ -303,6 +315,14 @@ export default function SectionHeatmap({
           >
             Mentions
           </button>
+          <select
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value as "compact" | "detailed")}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value="detailed">Detailed</option>
+            <option value="compact">Compact</option>
+          </select>
           <button
             onClick={() => setVerifiedOnly(!verifiedOnly)}
             className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
@@ -327,6 +347,9 @@ export default function SectionHeatmap({
           </button>
         </div>
       </div>
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+        Compare selected: {compareIds.length}/4
+      </p>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
@@ -343,12 +366,35 @@ export default function SectionHeatmap({
         </div>
       </div>
 
+      {comparedItems.length > 0 && (
+        <div className="rounded-3xl border border-blue-500/30 bg-blue-500/5 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-blue-500">Trend Compare ({comparedItems.length})</p>
+            <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            {comparedItems.map((item) => (
+              <div key={`cmp-${item.id || item.trend_name}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
+                <p className="text-sm font-black italic text-slate-900 dark:text-white line-clamp-2">{item.trend_name}</p>
+                <p className="mt-2 text-[10px] font-black text-slate-500">Heat {item.heat_score || 0} • Signal {item.signalScore || 0}</p>
+                <p className="text-[10px] font-black text-slate-500">Buy ≤ ${item.pricing?.targetBuy || 0}</p>
+                <p className="text-[10px] font-black text-slate-500">Sale ${item.pricing?.saleLow || 0}-${item.pricing?.saleHigh || 0}</p>
+                <p className="text-[10px] font-black text-slate-500">Net +${item.pricing?.expectedProfit || 0}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* HEATMAP GRID */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      <div className={`grid ${viewMode === "compact" ? "grid-cols-2 md:grid-cols-4 lg:grid-cols-6" : "grid-cols-1 md:grid-cols-3 lg:grid-cols-4"} gap-3`}>
         {visibleData.map((item) => (
           <div key={item.trend_name}>
              <HeatmapTile
                item={item}
+               viewMode={viewMode}
+               isCompared={compareIds.includes(String(item.id || item.trend_name))}
+               onToggleCompare={() => toggleCompare(item)}
                onOpenResearch={() => onTrendClick(item.trend_name)}
                onAddTrend={() =>
                  onAddTrend?.({
@@ -389,10 +435,16 @@ export default function SectionHeatmap({
 
 function HeatmapTile({
   item,
+  viewMode,
+  isCompared,
+  onToggleCompare,
   onOpenResearch,
   onAddTrend,
 }: {
   item: any;
+  viewMode: "compact" | "detailed";
+  isCompared: boolean;
+  onToggleCompare: () => void;
   onOpenResearch: () => void;
   onAddTrend: () => void;
 }) {
@@ -401,7 +453,7 @@ function HeatmapTile({
 
   return (
     <div 
-      className={`relative aspect-square rounded-2xl border transition-all duration-300 p-5 flex flex-col justify-between overflow-hidden group hover:scale-105 hover:shadow-xl
+      className={`relative ${viewMode === "compact" ? "aspect-square" : "aspect-auto min-h-[280px]"} rounded-2xl border transition-all duration-300 p-5 flex flex-col justify-between overflow-hidden group hover:scale-105 hover:shadow-xl
         ${isHot ? 'border-emerald-500/50 shadow-lg shadow-emerald-500/10' : 'border-slate-200 dark:border-white/5'}
       `}
       style={{ backgroundColor: `rgba(16, 185, 129, ${intensity * 0.15})` }}
@@ -450,9 +502,11 @@ function HeatmapTile({
         <p className="mt-1 text-[8px] font-black uppercase tracking-wider text-slate-500">
           Buy ≤ ${item.pricing?.targetBuy || 0} • Sale ${item.pricing?.saleLow || 0}-${item.pricing?.saleHigh || 0}
         </p>
-        <p className="mt-1 text-[8px] font-bold text-slate-500 line-clamp-2">
-          {item.confidenceReason}
-        </p>
+        {viewMode === "detailed" && (
+          <p className="mt-1 text-[8px] font-bold text-slate-500 line-clamp-2">
+            {item.confidenceReason}
+          </p>
+        )}
         <div className="mt-1">
           <span className="inline-flex px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200">
             Signal {item.signalScore || 0}
@@ -461,7 +515,7 @@ function HeatmapTile({
             Updated {formatDateLabel(item.updated_at)}
           </span>
         </div>
-        <div className="mt-2 grid grid-cols-2 gap-1">
+        <div className="mt-2 grid grid-cols-3 gap-1">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -479,6 +533,17 @@ function HeatmapTile({
             className="rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase py-1"
           >
             Research
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCompare();
+            }}
+            className={`rounded-md text-[8px] font-black uppercase py-1 ${
+              isCompared ? "bg-blue-500/15 text-blue-500" : "bg-slate-900/10 dark:bg-white/10 text-slate-600 dark:text-slate-300"
+            }`}
+          >
+            {isCompared ? "Compared" : "Compare"}
           </button>
         </div>
       </div>
