@@ -10,7 +10,6 @@ import SectionLedger from "@/components/dashboard/SectionLedger";
 import SectionHeatmap from "@/components/dashboard/SectionHeatmap";
 import SectionHunt from "@/components/dashboard/SectionHunt";
 import SectionHistory from "@/components/dashboard/SectionHistory"; 
-import SectionLedgerSidebar from "@/components/dashboard/SectionLedgerSidebar";
 import SubredditFilter from "@/components/dashboard/SubredditFilter";
 import { ListingModal } from "@/components/dashboard/ListingModal"; 
 
@@ -101,7 +100,7 @@ export default function DashboardPage() {
   // --- HYDRATION FIX ---
   const [mounted, setMounted] = useState(false);
   
-  const [activeView, setActiveView] = useState("scout");
+  const [activeView, setActiveView] = useState("overview");
   const [isDemoMode, setIsDemoMode] = useState(false); 
   const [selectedItem, setSelectedItem] = useState<any>(null); 
   const [selectedNode, setSelectedNode] = useState<any>(null); 
@@ -114,22 +113,6 @@ export default function DashboardPage() {
   const [realCompChecks, setRealCompChecks] = useState<CompCheck[]>([]);
   const [realCollectorJobs, setRealCollectorJobs] = useState<CollectorJob[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // --- MISSION HUB DATA ---
-  const [missionObjectives, setMissionObjectives] = useState([
-    {
-      id: 1,
-      title: "Vintage Levi's 501s",
-      guide: ["Check Red Tab (Big E?)", "Verify Selvedge ID", "Inspect Crotch Wear", "Check Button Fly Stamp"],
-      backups: ["Lee Riders", "Wrangler 13MWZ"]
-    },
-    {
-      id: 2,
-      title: "Carhartt Detroit J01",
-      guide: ["Check Neck Tag (Made in USA)", "Verify Union Stamp", "Inspect Cuff Fraying"],
-      backups: ["Dickies Eisenhower", "Ben Davis Work Coat"]
-    }
-  ]);
 
   // Header Mapping
   const viewLabels: Record<string, string> = {
@@ -245,8 +228,11 @@ export default function DashboardPage() {
     }
   };
 
-  const removeObjective = (id: number) => setMissionObjectives(prev => prev.filter(o => o.id !== id));
-  const clearObjectives = () => setMissionObjectives([]);
+  const hotSignalCount = realSignals.filter((s) => Number(s?.heat_score || 0) >= 85).length;
+  const healthyCollectorRuns = realCollectorJobs.filter((j) => {
+    const status = String(j?.status || "").toLowerCase();
+    return status === "success" || status === "completed" || status === "ok";
+  }).length;
 
   if (!mounted) return null;
 
@@ -294,6 +280,49 @@ export default function DashboardPage() {
           <h3 className="text-5xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white">
              {viewLabels[activeView]}
           </h3>
+          <div className="mt-6 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => fetchRealData()}
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-600 border border-emerald-500/30 hover:bg-emerald-500/20 transition-colors"
+            >
+              Refresh Data
+            </button>
+            <button
+              onClick={() => setActiveView("scout")}
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-500 border border-blue-500/30 hover:bg-blue-500/20 transition-colors"
+            >
+              Open Research
+            </button>
+            <button
+              onClick={() => setActiveView("hunt")}
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-600 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+            >
+              Open Store Map
+            </button>
+            <button
+              onClick={() => setActiveView("analysis")}
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-500 border border-rose-500/30 hover:bg-rose-500/20 transition-colors"
+            >
+              Open Trends
+            </button>
+            <div className="ml-auto flex flex-wrap gap-2">
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Signals: {realSignals.length}
+              </span>
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Hot: {hotSignalCount}
+              </span>
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Stores: {realStores.length}
+              </span>
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Trunk: {trunk.length}
+              </span>
+              <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                Healthy Runs: {healthyCollectorRuns}
+              </span>
+            </div>
+          </div>
         </header>
 
         <div className="animate-in fade-in duration-500">
@@ -302,6 +331,7 @@ export default function DashboardPage() {
               missions={realInventory}
               signals={realSignals}
               stores={realStores}
+              compChecks={realCompChecks}
               collectorJobs={realCollectorJobs}
               onNavigate={setActiveView}
             />
@@ -468,77 +498,68 @@ export default function DashboardPage() {
 
       {/* RIGHT SIDEBAR */}
       <aside className="w-96 h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative">
-        {activeView === 'missions' ? (
-          <SectionLedgerSidebar 
-             objectives={missionObjectives} 
-             onRemove={removeObjective}
-             onClear={clearObjectives}
-             onClose={() => setActiveView("overview")} 
-          />
-        ) : (
-          <div className="flex flex-col h-full p-8">
-            <div className="flex items-center justify-between mb-8">
-              <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
-                <Briefcase size={14} /> Sourcing Trunk (Confirmation Panel)
-              </h3>
-              {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear All</button>}
-            </div>
+        <div className="flex flex-col h-full p-8">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
+              <Briefcase size={14} /> Sourcing Trunk (Confirmation Panel)
+            </h3>
+            {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear All</button>}
+          </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4">
-              {trunk.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center opacity-30 text-slate-400">
-                  <Package size={48} className="mb-4" />
-                  <p className="text-[10px] font-black uppercase tracking-widest">Trunk Empty</p>
-                </div>
-              ) : (
-                trunk.map((item) => (
-                  <div key={item.id} className="p-6 bg-white dark:bg-slate-900 rounded-[2rem] border dark:border-slate-800 shadow-sm relative group animate-in slide-in-from-right">
-                    <button onClick={() => removeFromTrunk(item.id)} className="absolute top-5 right-5 text-slate-300 hover:text-red-500 transition-colors"><X size={14} /></button>
-                    
-                    <h4 className="text-xl font-black italic uppercase tracking-tighter dark:text-white leading-none mb-3 pr-6">{item.name}</h4>
-                    
-                    <div className="flex items-center gap-2 mb-4">
-                      <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${item.type === 'brand' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
-                        {item.type === 'brand' ? 'Brand' : 'Trend'}
-                      </span>
-                      <span className="text-sm font-black text-slate-900 dark:text-white">Target: ${item.entry_price}</span>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="bg-slate-50 dark:bg-white/5 p-3 rounded-2xl border border-slate-100 dark:border-slate-800">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center">
-                          <Info size={10} className="mr-1" /> Sourcing Intel
-                        </p>
-                        <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 italic leading-relaxed">
-                          "{item.intel}"
-                        </p>
-                      </div>
-
-                      {item.what_to_buy && item.what_to_buy.length > 0 && (
-                        <div className="bg-blue-50/50 dark:bg-blue-500/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-500/20">
-                          <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest mb-2 flex items-center">
-                            <CheckSquare size={10} className="mr-1" /> Checklist:
-                          </p>
-                          <ul className="space-y-1.5">
-                            {item.what_to_buy.map((tip: string, i: number) => (
-                              <li key={i} className="flex items-start text-[10px] font-bold text-slate-700 dark:text-slate-300 italic">
-                                <span className="h-1 w-1 rounded-full bg-blue-500 mt-1.5 mr-2 shrink-0" /> {tip}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
+          <div className="flex-1 overflow-y-auto space-y-4">
+            {trunk.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center opacity-30 text-slate-400">
+                <Package size={48} className="mb-4" />
+                <p className="text-[10px] font-black uppercase tracking-widest">Trunk Empty</p>
+              </div>
+            ) : (
+              trunk.map((item) => (
+                <div key={item.id} className="p-6 bg-white dark:bg-slate-900 rounded-[2rem] border dark:border-slate-800 shadow-sm relative group animate-in slide-in-from-right">
+                  <button onClick={() => removeFromTrunk(item.id)} className="absolute top-5 right-5 text-slate-300 hover:text-red-500 transition-colors"><X size={14} /></button>
+                  
+                  <h4 className="text-xl font-black italic uppercase tracking-tighter dark:text-white leading-none mb-3 pr-6">{item.name}</h4>
+                  
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${item.type === 'brand' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                      {item.type === 'brand' ? 'Brand' : 'Trend'}
+                    </span>
+                    <span className="text-sm font-black text-slate-900 dark:text-white">Target: ${item.entry_price}</span>
                   </div>
-                ))
-              )}
-            </div>
 
-            {trunk.length > 0 && (
-              <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Generate Route ({trunk.length})</button>
+                  <div className="space-y-3">
+                    <div className="bg-slate-50 dark:bg-white/5 p-3 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center">
+                        <Info size={10} className="mr-1" /> Sourcing Intel
+                      </p>
+                      <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 italic leading-relaxed">
+                        "{item.intel}"
+                      </p>
+                    </div>
+
+                    {item.what_to_buy && item.what_to_buy.length > 0 && (
+                      <div className="bg-blue-50/50 dark:bg-blue-500/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-500/20">
+                        <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest mb-2 flex items-center">
+                          <CheckSquare size={10} className="mr-1" /> Checklist:
+                        </p>
+                        <ul className="space-y-1.5">
+                          {item.what_to_buy.map((tip: string, i: number) => (
+                            <li key={i} className="flex items-start text-[10px] font-bold text-slate-700 dark:text-slate-300 italic">
+                              <span className="h-1 w-1 rounded-full bg-blue-500 mt-1.5 mr-2 shrink-0" /> {tip}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
             )}
           </div>
-        )}
+
+          {trunk.length > 0 && (
+            <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Generate Route ({trunk.length})</button>
+          )}
+        </div>
       </aside>
 
       <ListingModal item={selectedItem} isOpen={!!selectedItem} onClose={() => setSelectedItem(null)} />

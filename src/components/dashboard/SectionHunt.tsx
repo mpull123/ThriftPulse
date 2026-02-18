@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   CheckCircle2,
@@ -24,6 +24,9 @@ type StoreNode = {
   address: string;
   zip_code?: string;
   power_rank: number;
+  rating?: number | null;
+  review_count?: number | null;
+  census_income?: number | null;
   type: string;
   best_time: string;
   matches: string[];
@@ -40,13 +43,14 @@ function parseRank(value: unknown, fallback: number): number {
 }
 
 function generateFallbackCoords(index: number): { top: string; left: string } {
-  const row = Math.floor(index / 3);
-  const col = index % 3;
-  const top = 24 + row * 22;
-  const left = 24 + col * 24;
+  const columns = 4;
+  const row = Math.floor(index / columns);
+  const col = index % columns;
+  const top = 18 + row * 14;
+  const left = 16 + col * 20;
   return {
-    top: `${clamp(top, 10, 84)}%`,
-    left: `${clamp(left, 12, 86)}%`,
+    top: `${clamp(top, 10, 88)}%`,
+    left: `${clamp(left, 10, 90)}%`,
   };
 }
 
@@ -125,14 +129,33 @@ function matchesStore(item: any, store: StoreNode): boolean {
   return store.matches.some((m) => itemText.includes(String(m || "").toLowerCase()));
 }
 
-function mapGoogleResultsToStores(results: any[]): StoreNode[] {
+function computePowerRank(row: any, idx: number): number {
+  const base = 62 + (20 - idx) * 1.1;
+  const rating = Number(row?.rating);
+  const reviews = Number(row?.review_count);
+  const censusIncome = Number(row?.census_income);
+
+  const ratingBoost = Number.isFinite(rating) ? clamp((rating - 3.5) * 12, -8, 18) : 0;
+  const reviewBoost = Number.isFinite(reviews) && reviews > 0 ? clamp(Math.log10(reviews + 1) * 8, 0, 16) : 0;
+  const incomeBoost =
+    Number.isFinite(censusIncome) && censusIncome > 0
+      ? clamp((censusIncome - 65000) / 9000, -6, 12)
+      : 0;
+
+  return clamp(Math.round(base + ratingBoost + reviewBoost + incomeBoost), 1, 100);
+}
+
+function mapApiResultsToStores(results: any[]): StoreNode[] {
   if (!Array.isArray(results)) return [];
-  return results.slice(0, 8).map((row, idx) => ({
-    id: String(row.place_id || `google-${idx}`),
-    name: String(row.name || row.formatted_address?.split(",")[0] || `Store ${idx + 1}`),
-    address: String(row.formatted_address || "Address unavailable"),
-    power_rank: clamp(75 + ((8 - idx) * 3), 1, 100),
-    type: "Google Places",
+  return results.slice(0, 20).map((row, idx) => ({
+    id: String(row.id || row.place_id || `places-${idx}`),
+    name: String(row.name || row.formatted_address?.split(",")[0] || row.address?.split(",")[0] || `Store ${idx + 1}`),
+    address: String(row.address || row.formatted_address || "Address unavailable"),
+    power_rank: computePowerRank(row, idx),
+    rating: Number.isFinite(Number(row?.rating)) ? Number(row.rating) : null,
+    review_count: Number.isFinite(Number(row?.review_count)) ? Number(row.review_count) : null,
+    census_income: Number.isFinite(Number(row?.census_income)) ? Number(row.census_income) : null,
+    type: row.source === "osm" ? "OpenStreetMap" : "Google Places",
     best_time: "Weekday mornings",
     matches: ["Jackets", "Denim", "Footwear"],
     coords: generateFallbackCoords(idx),
@@ -153,6 +176,7 @@ export default function SectionHunt({
   const [mapZoom, setMapZoom] = useState(11);
   const [searching, setSearching] = useState(false);
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
+  const searchCacheRef = useRef<Record<string, StoreNode[]>>({});
 
   const normalizedStoreData = useMemo(() => {
     const normalized = normalizeStoreRows(stores);
@@ -177,20 +201,39 @@ export default function SectionHunt({
       setSelectedStore(null);
       setSearching(true);
       setSearchNotice(null);
+      const normalizedQuery = q.toLowerCase();
 
       try {
         const placesRes = await fetch(
-          `/api/places-search?q=${encodeURIComponent(q)}&limit=8`,
+          `/api/places-search?q=${encodeURIComponent(q)}&limit=20`,
           {
             headers: { Accept: "application/json" },
           }
         );
         if (placesRes.ok) {
           const placesData = await placesRes.json();
-          const mappedGoogle = mapGoogleResultsToStores(placesData?.results || []);
-          if (mappedGoogle.length > 0) {
-            setDetectedStores(mappedGoogle);
-            setSearchNotice(`Loaded ${mappedGoogle.length} Google Places result(s).`);
+          const mappedResults = mapApiResultsToStores(placesData?.results || []);
+          if (mappedResults.length > 0) {
+            const cached = searchCacheRef.current[normalizedQuery] || [];
+            const shouldMergeCache = cached.length > 0 && mappedResults.length < 4;
+            const mergedResults = shouldMergeCache
+              ? [...mappedResults, ...cached].filter(
+                  (row, idx, arr) =>
+                    arr.findIndex((r) => `${r.name}|${r.address}` === `${row.name}|${row.address}`) === idx
+                )
+              : mappedResults;
+
+            searchCacheRef.current[normalizedQuery] = mergedResults;
+            setDetectedStores(mergedResults);
+            const sourceLabel =
+              placesData?.source === "osm"
+                ? "OpenStreetMap"
+                : placesData?.source === "google+osm"
+                  ? "Google Places + OpenStreetMap"
+                : placesData?.source === "google"
+                  ? "Google Places"
+                  : "live map";
+            setSearchNotice(`Loaded ${mergedResults.length} ${sourceLabel} result(s).`);
             setSearching(false);
             return;
           }
@@ -207,36 +250,8 @@ export default function SectionHunt({
           return;
         }
 
-        const endpoint = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=12&q=${encodeURIComponent(
-          `thrift store ${q}`
-        )}`;
-        const res = await fetch(endpoint, {
-          headers: {
-            Accept: "application/json",
-          },
-        });
-
-        const data = (await res.json()) as any[];
-        if (!Array.isArray(data) || data.length === 0) {
-          setDetectedStores(normalizedStoreData);
-          setSearchNotice("No live stores found for that search. Showing your saved store nodes.");
-          setSearching(false);
-          return;
-        }
-
-        const mapped: StoreNode[] = data.slice(0, 8).map((row, idx) => ({
-          id: String(row.place_id || `osm-${idx}`),
-          name: String(row.name || row.display_name?.split(",")[0] || `Thrift Store ${idx + 1}`),
-          address: String(row.display_name || "Address unavailable"),
-          power_rank: clamp(72 + ((8 - idx) * 3), 1, 100),
-          type: "Live Search Result",
-          best_time: "Weekday mornings",
-          matches: ["Jackets", "Denim", "Footwear"],
-          coords: generateFallbackCoords(idx),
-        }));
-
-        setDetectedStores(mapped);
-        setSearchNotice(`Loaded ${mapped.length} live store result(s) from map search.`);
+        setDetectedStores(normalizedStoreData);
+        setSearchNotice("No live stores found for that search. Showing your saved store nodes.");
       } catch {
         setDetectedStores(normalizedStoreData);
         setSearchNotice("Live map search failed. Showing your saved store nodes.");
@@ -326,6 +341,11 @@ export default function SectionHunt({
                     {selectedStore.power_rank} PWR
                   </span>
                 </div>
+                <p className="text-[10px] text-slate-300 font-bold uppercase tracking-wide">
+                  {selectedStore.rating ? `Rating ${selectedStore.rating.toFixed(1)}` : "Rating n/a"}
+                  {selectedStore.review_count ? ` • ${selectedStore.review_count}+ reviews` : ""}
+                  {selectedStore.census_income ? ` • Census MHI $${Math.round(selectedStore.census_income).toLocaleString()}` : ""}
+                </p>
                 <div className="flex items-start gap-2 text-slate-400 text-xs italic">
                   <Clock size={14} className="mt-0.5" />
                   <span>Best Time: {selectedStore.best_time}</span>
@@ -428,7 +448,7 @@ export default function SectionHunt({
               height="100%"
               loading="lazy"
               allowFullScreen
-              className="grayscale contrast-125 opacity-70 hover:opacity-100 transition-opacity duration-700"
+              className="grayscale contrast-125 opacity-70 hover:opacity-100 transition-opacity duration-700 pointer-events-none"
               style={{ border: 0 }}
               src={mapSrc}
             />
@@ -482,7 +502,7 @@ export default function SectionHunt({
           {visibleStores.map((store) => (
             <div
               key={`pin-${store.id}`}
-              className="absolute z-20 group cursor-pointer"
+              className="absolute z-40 group cursor-pointer pointer-events-auto"
               style={{ top: store.coords.top, left: store.coords.left }}
               onClick={() => setSelectedStore(store)}
             >
