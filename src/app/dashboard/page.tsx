@@ -21,7 +21,6 @@ import Link from "next/link";
 import type { CollectorJob, CompCheck } from "@/lib/types";
 
 const NULL_WARNING_THRESHOLD = 0.5;
-const PROMOTED_SIGNALS_STORAGE_KEY = "thriftpulse_promoted_signal_ids_v1";
 
 function splitIntelToBullets(intel: string): string[] {
   return String(intel || "")
@@ -107,7 +106,6 @@ export default function DashboardPage() {
   const [selectedNode, setSelectedNode] = useState<any>(null); 
   const [trunk, setTrunk] = useState<any[]>([]);
   const [crossPageFocus, setCrossPageFocus] = useState("");
-  const [promotedSignalIds, setPromotedSignalIds] = useState<string[]>([]);
 
   // --- REAL DATA STATE ---
   const [realInventory, setRealInventory] = useState<any[]>([]);
@@ -131,23 +129,7 @@ export default function DashboardPage() {
   useEffect(() => {
     setMounted(true);
     fetchRealData();
-    try {
-      const raw = localStorage.getItem(PROMOTED_SIGNALS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          setPromotedSignalIds(parsed.map((v) => String(v)));
-        }
-      }
-    } catch {
-      setPromotedSignalIds([]);
-    }
   }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
-    localStorage.setItem(PROMOTED_SIGNALS_STORAGE_KEY, JSON.stringify(promotedSignalIds));
-  }, [promotedSignalIds, mounted]);
 
   // --- FETCH REAL SUPABASE DATA ---
   async function fetchRealData() {
@@ -230,15 +212,45 @@ export default function DashboardPage() {
     if (focus && String(focus).trim()) setCrossPageFocus(String(focus).trim());
     setActiveView(view);
   };
-  const promoteSignalToDecisionLab = (signalId?: string) => {
+  const promoteSignalToDecisionLab = async (signalId?: string) => {
     const id = String(signalId || "").trim();
     if (!id) return;
-    setPromotedSignalIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    const nowIso = new Date().toISOString();
+    setRealSignals((prev) =>
+      prev.map((s: any) =>
+        String(s?.id || "") === id
+          ? { ...s, pipeline_stage: "decision", promoted_at: s?.promoted_at || nowIso, stage_updated_at: nowIso }
+          : s
+      )
+    );
+    const { error } = await supabase
+      .from("market_signals")
+      .update({ pipeline_stage: "decision", promoted_at: nowIso, stage_updated_at: nowIso })
+      .eq("id", id);
+    if (error) {
+      console.error("Failed to promote signal:", error.message);
+      fetchRealData();
+    }
   };
-  const demoteSignalToRadar = (signalId?: string) => {
+  const demoteSignalToRadar = async (signalId?: string) => {
     const id = String(signalId || "").trim();
     if (!id) return;
-    setPromotedSignalIds((prev) => prev.filter((v) => v !== id));
+    const nowIso = new Date().toISOString();
+    setRealSignals((prev) =>
+      prev.map((s: any) =>
+        String(s?.id || "") === id
+          ? { ...s, pipeline_stage: "radar", stage_updated_at: nowIso }
+          : s
+      )
+    );
+    const { error } = await supabase
+      .from("market_signals")
+      .update({ pipeline_stage: "radar", stage_updated_at: nowIso })
+      .eq("id", id);
+    if (error) {
+      console.error("Failed to demote signal:", error.message);
+      fetchRealData();
+    }
   };
 
   // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
@@ -262,8 +274,8 @@ export default function DashboardPage() {
   };
 
   const hotSignalCount = realSignals.filter((s) => Number(s?.heat_score || 0) >= 85).length;
-  const decisionLabSignals = realSignals.filter((s: any) => promotedSignalIds.includes(String(s?.id || "")));
-  const radarSignals = realSignals.filter((s: any) => !promotedSignalIds.includes(String(s?.id || "")));
+  const decisionLabSignals = realSignals.filter((s: any) => String(s?.pipeline_stage || "radar").toLowerCase() === "decision");
+  const radarSignals = realSignals.filter((s: any) => String(s?.pipeline_stage || "radar").toLowerCase() === "radar");
   const healthyCollectorRuns = realCollectorJobs.filter((j) => {
     const status = String(j?.status || "").toLowerCase();
     return status === "success" || status === "completed" || status === "ok";
@@ -367,7 +379,7 @@ export default function DashboardPage() {
           {activeView === "overview" && (
             <SectionOverview
               missions={realInventory}
-              signals={radarSignals}
+              signals={realSignals}
               stores={realStores}
               compChecks={realCompChecks}
               collectorJobs={realCollectorJobs}
