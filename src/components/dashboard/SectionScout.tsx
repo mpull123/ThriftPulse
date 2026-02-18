@@ -337,6 +337,7 @@ export default function SectionScout({
   onNodeSelect,
   onOpenTrend,
   onDemoteTrend,
+  onArchiveTrend,
   signals = [],
   compChecks = [],
   collectorJobs = [],
@@ -347,6 +348,7 @@ export default function SectionScout({
   onNodeSelect: (node: any) => void;
   onOpenTrend?: (term: string) => void;
   onDemoteTrend?: (signalId?: string) => void;
+  onArchiveTrend?: (signalId?: string) => void;
   signals?: any[];
   compChecks?: CompCheck[];
   collectorJobs?: CollectorJob[];
@@ -707,6 +709,24 @@ export default function SectionScout({
     return ranked[0]?.node?.name ? `Best ${compareMode} pick: ${ranked[0].node.name}` : "";
   }, [comparedNodes, compareMode]);
 
+  const demoteSelected = async () => {
+    if (!onDemoteTrend) return;
+    for (const node of comparedNodes) {
+      const id = String(node?.signal_id || "").trim();
+      if (id) await onDemoteTrend(id);
+    }
+    setCompareIds([]);
+  };
+
+  const archiveSelected = async () => {
+    if (!onArchiveTrend) return;
+    for (const node of comparedNodes) {
+      const id = String(node?.signal_id || "").trim();
+      if (id) await onArchiveTrend(id);
+    }
+    setCompareIds([]);
+  };
+
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
     setCompareIds([]);
     if (preset === "high_confidence") {
@@ -869,6 +889,22 @@ export default function SectionScout({
         <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
           Compare selected: {compareIds.length}/4
         </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            onClick={() => void demoteSelected()}
+            disabled={comparedNodes.length === 0}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500/10 text-rose-500 disabled:opacity-40"
+          >
+            Demote Selected
+          </button>
+          <button
+            onClick={() => void archiveSelected()}
+            disabled={comparedNodes.length === 0}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+          >
+            Archive Selected
+          </button>
+        </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
           <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>

@@ -155,12 +155,14 @@ function buildPriceSnapshot({
 export default function SectionHeatmap({
   onTrendClick,
   onAddTrend,
+  onPromoteTrend,
   signals = [],
   compChecks = [],
   focusTerm = "",
 }: {
   onTrendClick: (trendName: string, signalId?: string) => void;
   onAddTrend?: (node: any) => void;
+  onPromoteTrend?: (signalId?: string) => void;
   signals?: any[];
   compChecks?: CompCheck[];
   focusTerm?: string;
@@ -325,6 +327,15 @@ export default function SectionHeatmap({
       if (prev.length >= 4) return prev;
       return [...prev, id];
     });
+  };
+
+  const promoteSelected = async () => {
+    if (!onPromoteTrend) return;
+    for (const item of comparedItems) {
+      const id = String(item?.id || "").trim();
+      if (id) await onPromoteTrend(id);
+    }
+    setCompareIds([]);
   };
 
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
@@ -543,6 +554,15 @@ export default function SectionHeatmap({
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
         Compare selected: {compareIds.length}/4
       </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => void promoteSelected()}
+          disabled={comparedItems.length === 0}
+          className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500 disabled:opacity-40"
+        >
+          Promote Selected
+        </button>
+      </div>
       <div className="flex flex-wrap gap-2">
         <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
         <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>

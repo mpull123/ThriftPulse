@@ -212,45 +212,54 @@ export default function DashboardPage() {
     if (focus && String(focus).trim()) setCrossPageFocus(String(focus).trim());
     setActiveView(view);
   };
-  const promoteSignalToDecisionLab = async (signalId?: string) => {
-    const id = String(signalId || "").trim();
-    if (!id) return;
+  const updateSignalStage = async (signalIds: string[], stage: "radar" | "decision" | "archived") => {
+    const ids = signalIds.map((v) => String(v || "").trim()).filter(Boolean);
+    if (!ids.length) return;
     const nowIso = new Date().toISOString();
+
     setRealSignals((prev) =>
       prev.map((s: any) =>
-        String(s?.id || "") === id
-          ? { ...s, pipeline_stage: "decision", promoted_at: s?.promoted_at || nowIso, stage_updated_at: nowIso }
+        ids.includes(String(s?.id || ""))
+          ? {
+              ...s,
+              pipeline_stage: stage,
+              promoted_at: stage === "decision" ? s?.promoted_at || nowIso : s?.promoted_at,
+              archived_at: stage === "archived" ? nowIso : s?.archived_at,
+              stage_updated_at: nowIso,
+            }
           : s
       )
     );
+
     const { error } = await supabase
       .from("market_signals")
-      .update({ pipeline_stage: "decision", promoted_at: nowIso, stage_updated_at: nowIso })
-      .eq("id", id);
+      .update({
+        pipeline_stage: stage,
+        promoted_at: stage === "decision" ? nowIso : undefined,
+        archived_at: stage === "archived" ? nowIso : undefined,
+        stage_updated_at: nowIso,
+      })
+      .in("id", ids);
+
     if (error) {
-      console.error("Failed to promote signal:", error.message);
+      console.error(`Failed to set stage=${stage}:`, error.message);
       fetchRealData();
     }
+  };
+  const promoteSignalToDecisionLab = async (signalId?: string) => {
+    const id = String(signalId || "").trim();
+    if (!id) return;
+    await updateSignalStage([id], "decision");
   };
   const demoteSignalToRadar = async (signalId?: string) => {
     const id = String(signalId || "").trim();
     if (!id) return;
-    const nowIso = new Date().toISOString();
-    setRealSignals((prev) =>
-      prev.map((s: any) =>
-        String(s?.id || "") === id
-          ? { ...s, pipeline_stage: "radar", stage_updated_at: nowIso }
-          : s
-      )
-    );
-    const { error } = await supabase
-      .from("market_signals")
-      .update({ pipeline_stage: "radar", stage_updated_at: nowIso })
-      .eq("id", id);
-    if (error) {
-      console.error("Failed to demote signal:", error.message);
-      fetchRealData();
-    }
+    await updateSignalStage([id], "radar");
+  };
+  const archiveSignal = async (signalId?: string) => {
+    const id = String(signalId || "").trim();
+    if (!id) return;
+    await updateSignalStage([id], "archived");
   };
 
   // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
@@ -397,6 +406,7 @@ export default function DashboardPage() {
               onNodeSelect={setSelectedNode}
               onOpenTrend={(term) => openViewWithFocus("analysis", term)}
               onDemoteTrend={(signalId) => demoteSignalToRadar(signalId)}
+              onArchiveTrend={(signalId) => archiveSignal(signalId)}
               focusTerm={crossPageFocus}
               allowFallback={false}
             />
@@ -432,6 +442,7 @@ export default function DashboardPage() {
                 promoteSignalToDecisionLab(signalId);
                 openViewWithFocus("scout", trendName);
               }}
+              onPromoteTrend={(signalId) => promoteSignalToDecisionLab(signalId)}
               focusTerm={crossPageFocus}
             />
           )}
