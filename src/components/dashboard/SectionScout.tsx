@@ -10,6 +10,7 @@ import {
 } from "@/lib/marketIntel";
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
+const SCOUT_PRESET_STORAGE_KEY = "thriftpulse_research_preset_v1";
 
 function extractTrendTargets(signal: any): string[] {
   const targets = new Set<string>();
@@ -338,12 +339,32 @@ export default function SectionScout({
   const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip" | "Watchlist">("all");
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
+  const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
     if (term) setSearchTerm(term);
   }, [focusTerm]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SCOUT_PRESET_STORAGE_KEY);
+      if (raw) {
+        const preset = JSON.parse(raw);
+        setSearchTerm(String(preset.searchTerm || ""));
+        setConfidenceFilter(preset.confidenceFilter || "all");
+        setDecisionFilter(preset.decisionFilter || "all");
+        setSortMode(preset.sortMode || "heat");
+        setViewMode(preset.viewMode || "detailed");
+        setLowBuyInOnly(Boolean(preset.lowBuyInOnly));
+      } else {
+        setConfidenceFilter("high");
+      }
+    } catch {
+      setConfidenceFilter("high");
+    }
+  }, []);
 
   const latestCollectorRun = getLatestCollectorRun(collectorJobs);
   const collectorRunAge = getRunAgeLabel(latestCollectorRun);
@@ -575,6 +596,7 @@ export default function SectionScout({
   const matchesCommonFilters = (node: any): boolean => {
     if (confidenceFilter !== "all" && node?.confidence !== confidenceFilter) return false;
     if (decisionFilter !== "all" && node?.decision !== decisionFilter) return false;
+    if (lowBuyInOnly && Number(node?.target_buy || 0) > 35) return false;
 
     const q = searchTerm.trim().toLowerCase();
     if (!q) return true;
@@ -623,6 +645,51 @@ export default function SectionScout({
       if (prev.length >= 4) return prev;
       return [...prev, id];
     });
+  };
+
+  const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
+    setCompareIds([]);
+    if (preset === "high_confidence") {
+      setSearchTerm("");
+      setConfidenceFilter("high");
+      setDecisionFilter("all");
+      setSortMode("heat");
+      setLowBuyInOnly(false);
+      return;
+    }
+    if (preset === "low_buy_in") {
+      setSearchTerm("");
+      setConfidenceFilter("all");
+      setDecisionFilter("all");
+      setSortMode("profit");
+      setLowBuyInOnly(true);
+      return;
+    }
+    if (preset === "quick_flips") {
+      setSearchTerm("");
+      setConfidenceFilter("med");
+      setDecisionFilter("Buy");
+      setSortMode("profit");
+      setLowBuyInOnly(false);
+      return;
+    }
+    setSearchTerm("vintage 90s y2k");
+    setConfidenceFilter("all");
+    setDecisionFilter("all");
+    setSortMode("heat");
+    setLowBuyInOnly(false);
+  };
+
+  const saveCurrentPreset = () => {
+    const payload = {
+      searchTerm,
+      confidenceFilter,
+      decisionFilter,
+      sortMode,
+      viewMode,
+      lowBuyInOnly,
+    };
+    localStorage.setItem(SCOUT_PRESET_STORAGE_KEY, JSON.stringify(payload));
   };
 
   return (
@@ -683,6 +750,13 @@ export default function SectionScout({
         <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
           Compare selected: {compareIds.length}/4
         </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
+          <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>
+          <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
+          <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
+          <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
+        </div>
       </section>
 
       {comparedNodes.length > 0 && (

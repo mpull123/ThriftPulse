@@ -9,6 +9,7 @@ import {
 } from "@/lib/marketIntel";
 import type { CompCheck, ConfidenceLevel } from "@/lib/types";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
+const HEATMAP_PRESET_STORAGE_KEY = "thriftpulse_trends_preset_v1";
 
 function hashString(input: string): number {
   let hash = 0;
@@ -164,6 +165,27 @@ export default function SectionHeatmap({
     if (term) setSearchTerm(term);
   }, [focusTerm]);
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HEATMAP_PRESET_STORAGE_KEY);
+      if (raw) {
+        const preset = JSON.parse(raw);
+        setSearchTerm(String(preset.searchTerm || ""));
+        setConfidenceFilter(preset.confidenceFilter || "all");
+        setSourceFilter(preset.sourceFilter || "all");
+        setSortMode(preset.sortMode || "signal");
+        setViewMode(preset.viewMode || "detailed");
+        setVerifiedOnly(Boolean(preset.verifiedOnly));
+        setFreshOnly(Boolean(preset.freshOnly));
+        setLowBuyInOnly(Boolean(preset.lowBuyInOnly));
+      } else {
+        setConfidenceFilter("high");
+      }
+    } catch {
+      setConfidenceFilter("high");
+    }
+  }, []);
+
   // If props are passed (from parent fetch), use them
   useEffect(() => {
     if (signals.length > 0) {
@@ -250,6 +272,61 @@ export default function SectionHeatmap({
       if (prev.length >= 4) return prev;
       return [...prev, id];
     });
+  };
+
+  const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
+    setCompareIds([]);
+    if (preset === "high_confidence") {
+      setSearchTerm("");
+      setConfidenceFilter("high");
+      setSourceFilter("all");
+      setSortMode("signal");
+      setVerifiedOnly(true);
+      setFreshOnly(false);
+      setLowBuyInOnly(false);
+      return;
+    }
+    if (preset === "low_buy_in") {
+      setSearchTerm("");
+      setConfidenceFilter("all");
+      setSourceFilter("style");
+      setSortMode("signal");
+      setVerifiedOnly(false);
+      setFreshOnly(false);
+      setLowBuyInOnly(true);
+      return;
+    }
+    if (preset === "quick_flips") {
+      setSearchTerm("");
+      setConfidenceFilter("med");
+      setSourceFilter("style");
+      setSortMode("mentions");
+      setVerifiedOnly(true);
+      setFreshOnly(false);
+      setLowBuyInOnly(true);
+      return;
+    }
+    setSearchTerm("vintage 90s y2k");
+    setConfidenceFilter("all");
+    setSourceFilter("all");
+    setSortMode("heat");
+    setVerifiedOnly(false);
+    setFreshOnly(false);
+    setLowBuyInOnly(false);
+  };
+
+  const saveCurrentPreset = () => {
+    const payload = {
+      searchTerm,
+      confidenceFilter,
+      sourceFilter,
+      sortMode,
+      viewMode,
+      verifiedOnly,
+      freshOnly,
+      lowBuyInOnly,
+    };
+    localStorage.setItem(HEATMAP_PRESET_STORAGE_KEY, JSON.stringify(payload));
   };
 
   return (
@@ -350,6 +427,13 @@ export default function SectionHeatmap({
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
         Compare selected: {compareIds.length}/4
       </p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
+        <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>
+        <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
+        <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
+        <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
