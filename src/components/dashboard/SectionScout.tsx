@@ -174,6 +174,34 @@ function hashString(input: string): number {
   return Math.abs(hash);
 }
 
+function normalizeTrendNameForDedupe(name: string): string {
+  const normalized = String(name || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\bt[\s-]?shirt\b/g, " tshirt ")
+    .replace(/\btee\b/g, " tshirt ")
+    .replace(/\bhigh[\s-]?waisted\b/g, " highwaisted ")
+    .replace(/\bwide[\s-]?leg\b/g, " wideleg ")
+    .replace(/\bdouble[\s-]?knee\b/g, " doubleknee ")
+    .replace(/\bslip[\s-]?on\b/g, " slipon ")
+    .replace(/\b90'?s\b/g, " 90s ")
+    .replace(/[^a-z0-9\s]/g, " ");
+  const dropWords = new Set(["chic", "luxe", "fashion", "style", "look"]);
+  const tokens = normalized
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => !dropWords.has(t))
+    .map((t) => (t.endsWith("s") && t.length > 4 ? t.slice(0, -1) : t));
+  return tokens.join(" ");
+}
+
+function getTrendDedupeKey(signal: any): string {
+  const nameKey = normalizeTrendNameForDedupe(String(signal?.trend_name || ""));
+  const brandKey = String(signal?.hook_brand || "").trim().toLowerCase();
+  return `${nameKey}::${brandKey}`;
+}
+
 function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
   const explicitMentionCount = Number(signal?.mention_count || 0);
   if (explicitMentionCount > 0) return explicitMentionCount;
@@ -204,7 +232,30 @@ function getSignalScore(signal: any, latestComp: CompCheck | null): number {
   const mentions = getTrendMentions(signal, latestComp);
   const heat = Number(signal?.heat_score || 0);
   const sample = Number(latestComp?.sample_size || 0);
-  const score = 15 + Math.round(heat * 0.45) + Math.min(20, Math.round(mentions / 8)) + Math.min(12, sample * 2);
+  const sourceSignalCount = Number(signal?.source_signal_count || 0);
+  const sourceDiversity =
+    (Number(signal?.ebay_sample_count || 0) > 0 ? 1 : 0) +
+    (Number(signal?.google_trend_hits || 0) > 0 ? 1 : 0) +
+    (Number(signal?.ai_corpus_hits || 0) > 0 ? 1 : 0) +
+    (Number(signal?.ebay_discovery_hits || 0) > 0 ? 1 : 0);
+  const trendName = String(signal?.trend_name || "");
+  const specificity = Math.min(12, normalizeTrendNameForDedupe(trendName).split(" ").filter(Boolean).length * 2);
+  const genericPenalty =
+    /\b(pants|shirt|jacket|sneaker|boots?)\b/i.test(trendName) &&
+    normalizeTrendNameForDedupe(trendName).split(" ").filter(Boolean).length <= 2
+      ? 10
+      : 0;
+  const jitter = hashString(trendName) % 7;
+  const score =
+    8 +
+    Math.round(heat * 0.42) +
+    Math.min(24, Math.round(mentions / 6)) +
+    Math.min(14, Math.round(sample * 2.4)) +
+    Math.min(10, Math.round(sourceSignalCount * 1.3)) +
+    sourceDiversity * 4 +
+    specificity +
+    jitter -
+    genericPenalty;
   return Math.max(10, Math.min(99, score));
 }
 
@@ -413,8 +464,8 @@ function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
     (hasBrand ? 1 : 0) +
     (heat >= 80 ? 1 : 0);
 
-  if (signalScore >= 78 || heat >= 88 || score >= 4) return "high";
-  if (signalScore >= 52 || heat >= 70 || score >= 2) return "med";
+  if (signalScore >= 84 || (heat >= 88 && score >= 3) || score >= 5) return "high";
+  if (signalScore >= 60 || heat >= 72 || score >= 2) return "med";
   return "low";
 }
 
@@ -422,14 +473,20 @@ function getBrandFallbackConfidence({
   avgHeat,
   evidenceCount,
   hasIntel,
+  mentionCount = 0,
 }: {
   avgHeat: number;
   evidenceCount: number;
   hasIntel: boolean;
+  mentionCount?: number;
 }): ConfidenceLevel {
-  const score = (avgHeat >= 80 ? 2 : avgHeat >= 70 ? 1 : 0) + (evidenceCount >= 4 ? 2 : evidenceCount >= 2 ? 1 : 0) + (hasIntel ? 1 : 0);
-  if (score >= 4) return "high";
-  if (score >= 2) return "med";
+  const score =
+    (avgHeat >= 85 ? 3 : avgHeat >= 74 ? 2 : avgHeat >= 66 ? 1 : 0) +
+    (evidenceCount >= 8 ? 3 : evidenceCount >= 5 ? 2 : evidenceCount >= 3 ? 1 : 0) +
+    (mentionCount >= 150 ? 3 : mentionCount >= 95 ? 2 : mentionCount >= 55 ? 1 : 0) +
+    (hasIntel ? 1 : 0);
+  if (score >= 8) return "high";
+  if (score >= 4) return "med";
   return "low";
 }
 
@@ -468,6 +525,7 @@ export default function SectionScout({
   const [savedPresets, setSavedPresets] = useState<ScoutSavedPreset[]>([]);
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [presetName, setPresetName] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
@@ -611,11 +669,13 @@ export default function SectionScout({
 
   const liveBrandNodes = [...liveBrandMap.values()].map((node) => {
     const avgHeat = node.heatCount ? Math.round(node.heatTotal / node.heatCount) : 70;
+    const mentions = Math.max(10, node.what.size * 4);
     const compConfidence = getConfidenceFromComp(node.latestComp);
     const fallbackConfidence = getBrandFallbackConfidence({
       avgHeat,
       evidenceCount: node.what.size,
       hasIntel: node.notes.size > 0,
+      mentionCount: mentions,
     });
     const riskText = [...node.notes].find((n: string) => String(n).toLowerCase().includes("risk")) || "";
     const plan = buildPricePlan({
@@ -624,9 +684,8 @@ export default function SectionScout({
       confidence: node.latestComp ? compConfidence : fallbackConfidence,
       riskText,
       latestComp: node.latestComp,
-      mentions: Math.max(10, node.what.size * 4),
+      mentions,
     });
-    const mentions = Math.max(10, node.what.size * 4);
 
     return {
       id: node.id,
@@ -664,41 +723,86 @@ export default function SectionScout({
         hookBrand: node.name,
         evidence: [...node.what].filter(Boolean).slice(0, 4),
       }),
+      signal_ids: signals
+        .filter((s: any) => String(s?.hook_brand || "").trim().toLowerCase() === String(node.name || "").trim().toLowerCase())
+        .map((s: any) => String(s?.id || "").trim())
+        .filter(Boolean),
     };
   });
 
   const brandNodes: any[] = liveBrandNodes.length > 0 ? liveBrandNodes : allowFallback ? fallbackBrandNodes : [];
 
   // 2. STYLE TRENDS (Merged: Live DB Signals + Hardcoded)
-  // Convert DB signals into the Node format used by the UI
-  const liveTrends = signals.filter((s: any) => !isBrandSignal(s)).map((s: any) => {
-    const latestComp = getLatestCompCheck(s, compChecks);
-    const compConfidence = getConfidenceFromComp(latestComp);
-    const signalScore = getSignalScore(s, latestComp);
-    const confidence = latestComp ? compConfidence : getFallbackConfidence(s, signalScore);
-    const topTargets = extractTrendTargets(s);
+  // Convert DB signals into the Node format used by the UI, then dedupe near-duplicate names.
+  const dedupedTrendGroups = new Map<string, any[]>();
+  signals
+    .filter((s: any) => !isBrandSignal(s))
+    .forEach((s: any) => {
+      const key = getTrendDedupeKey(s);
+      const existing = dedupedTrendGroups.get(key) || [];
+      existing.push(s);
+      dedupedTrendGroups.set(key, existing);
+    });
+
+  const liveTrends = [...dedupedTrendGroups.values()].map((group: any[]) => {
+    const representative = [...group].sort((a, b) => {
+      const heatDelta = Number(b?.heat_score || 0) - Number(a?.heat_score || 0);
+      if (heatDelta !== 0) return heatDelta;
+      const bTime = new Date(b?.updated_at || b?.created_at || 0).getTime();
+      const aTime = new Date(a?.updated_at || a?.created_at || 0).getTime();
+      return bTime - aTime;
+    })[0];
+
+    const mergedSignal = {
+      ...representative,
+      heat_score: Math.round(group.reduce((sum, s) => sum + Number(s?.heat_score || 0), 0) / Math.max(1, group.length)),
+      exit_price: Math.round(group.reduce((sum, s) => sum + Number(s?.exit_price || 0), 0) / Math.max(1, group.length)),
+      mention_count: group.reduce((sum, s) => sum + Number(s?.mention_count || 0), 0),
+      source_signal_count: group.reduce((sum, s) => sum + Number(s?.source_signal_count || 0), 0),
+      ebay_sample_count: group.reduce((sum, s) => sum + Number(s?.ebay_sample_count || 0), 0),
+      google_trend_hits: group.reduce((sum, s) => sum + Number(s?.google_trend_hits || 0), 0),
+      ai_corpus_hits: group.reduce((sum, s) => sum + Number(s?.ai_corpus_hits || 0), 0),
+      ebay_discovery_hits: group.reduce((sum, s) => sum + Number(s?.ebay_discovery_hits || 0), 0),
+      visual_cues: Array.from(
+        new Set(group.flatMap((s) => (Array.isArray(s?.visual_cues) ? s.visual_cues : [])))
+      ).slice(0, 10),
+    };
+
+    const latestComp =
+      group
+        .map((s) => getLatestCompCheck(s, compChecks))
+        .sort((a, b) => {
+          const aTime = new Date(a?.checked_at || a?.updated_at || 0).getTime();
+          const bTime = new Date(b?.checked_at || b?.updated_at || 0).getTime();
+          return bTime - aTime;
+        })[0] || null;
+
+    const signalScore = getSignalScore(mergedSignal, latestComp);
+    const confidence = getFallbackConfidence(mergedSignal, signalScore);
+    const topTargets = extractTrendTargets(mergedSignal);
+    const mentions = getTrendMentions(mergedSignal, latestComp);
 
     const plan = buildPricePlan({
-      entryPrice: s.exit_price || 0,
-      heat: s.heat_score || 50,
+      entryPrice: mergedSignal.exit_price || 0,
+      heat: mergedSignal.heat_score || 50,
       confidence,
-      riskText: s.risk_factor || "",
+      riskText: mergedSignal.risk_factor || "",
       latestComp,
-      mentions: getTrendMentions(s, latestComp),
+      mentions,
     });
-    const mentions = getTrendMentions(s, latestComp);
 
     return {
-      id: `live-${s.id}`,
-      signal_id: s.id,
+      id: `live-${String(representative?.id || "").trim()}`,
+      signal_id: String(representative?.id || "").trim(),
+      signal_ids: group.map((s) => String(s?.id || "").trim()).filter(Boolean),
       type: "style",
-      name: s.trend_name,
-      heat: s.heat_score || 50,
-      source: s?.track || "Live Monitor",
-      sentiment: s.heat_score > 80 ? "Surging" : "Stable",
+      name: representative?.trend_name,
+      heat: mergedSignal.heat_score || 50,
+      source: representative?.track || "Live Monitor",
+      sentiment: mergedSignal.heat_score > 80 ? "Surging" : "Stable",
       mentions,
       signalScore,
-      entry_price: s.exit_price || 0,
+      entry_price: mergedSignal.exit_price || 0,
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
       expected_sale_low: plan.saleLow,
@@ -709,24 +813,24 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
-      intel: getSignalIntel(s),
+      intel: getSignalIntel(mergedSignal),
       what_to_buy: buildPrioritizedLookFors({
-        title: s?.trend_name || "",
+        title: representative?.trend_name || "",
         kind: "style",
-        hookBrand: s?.hook_brand || "",
+        hookBrand: representative?.hook_brand || "",
         evidence: topTargets,
       }),
-      brands_to_watch: inferBrandsForTrend(s?.trend_name, s?.hook_brand),
-      brandRef: s?.hook_brand || null,
+      brands_to_watch: inferBrandsForTrend(representative?.trend_name, representative?.hook_brand),
+      brandRef: representative?.hook_brand || null,
       compAgeLabel: getCompAgeLabel(latestComp),
       confidence,
       confidence_reason: getConfidenceReason({ latestComp, confidence, mentions }),
-      last_updated_at: s?.updated_at || s?.created_at || null,
+      last_updated_at: representative?.updated_at || representative?.created_at || null,
       source_counts: {
-        ebay: Number(s?.ebay_sample_count || 0),
-        google: Number(s?.google_trend_hits || 0),
-        ai: Number(s?.ai_corpus_hits || 0),
-        discovery: Number(s?.ebay_discovery_hits || 0),
+        ebay: Number(mergedSignal?.ebay_sample_count || 0),
+        google: Number(mergedSignal?.google_trend_hits || 0),
+        ai: Number(mergedSignal?.ai_corpus_hits || 0),
+        discovery: Number(mergedSignal?.ebay_discovery_hits || 0),
       },
       collectorRunAge,
     };
@@ -796,6 +900,9 @@ export default function SectionScout({
   );
 
   const getSignalIdsForNode = (node: any): string[] => {
+    if (Array.isArray(node?.signal_ids) && node.signal_ids.length > 0) {
+      return node.signal_ids.map((id: any) => String(id || "").trim()).filter(Boolean);
+    }
     const directId = String(node?.signal_id || "").trim();
     if (directId) return [directId];
 
@@ -864,9 +971,14 @@ export default function SectionScout({
   const demoteSelected = async () => {
     if (!onDemoteTrend) return;
     const ids = Array.from(new Set(selectedNodes.flatMap((node: any) => getSignalIdsForNode(node))));
+    if (ids.length === 0) {
+      setActionNotice("No linked signal records found for this selection.");
+      return;
+    }
     for (const id of ids) {
       if (id) await onDemoteTrend(id);
     }
+    setActionNotice(`Demoted ${selectedNodes.length} node(s). Updated ${ids.length} record(s) back to Radar.`);
     setSelectedIds([]);
     setCompareIds([]);
   };
@@ -874,9 +986,14 @@ export default function SectionScout({
   const archiveSelected = async () => {
     if (!onArchiveTrend) return;
     const ids = Array.from(new Set(selectedNodes.flatMap((node: any) => getSignalIdsForNode(node))));
+    if (ids.length === 0) {
+      setActionNotice("No linked signal records found for this selection.");
+      return;
+    }
     for (const id of ids) {
       if (id) await onArchiveTrend(id);
     }
+    setActionNotice(`Archived ${selectedNodes.length} node(s). Updated ${ids.length} record(s) to Archived.`);
     setSelectedIds([]);
     setCompareIds([]);
   };
@@ -884,6 +1001,7 @@ export default function SectionScout({
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
     setCompareIds([]);
     setSelectedIds([]);
+    setActionNotice("");
     if (preset === "high_confidence") {
       setSearchTerm("");
       setConfidenceFilter("high");
@@ -1067,6 +1185,11 @@ export default function SectionScout({
             Clear Selection
           </button>
         </div>
+        {actionNotice && (
+          <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-emerald-600">
+            {actionNotice}
+          </p>
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
           <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>
