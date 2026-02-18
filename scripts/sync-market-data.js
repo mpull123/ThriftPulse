@@ -291,6 +291,7 @@ function isSpecificFashionTerm(term) {
   if (words.length >= 3) specificity += 1;
   if (/\d/.test(t) || /-/.test(t)) specificity += 1;
 
+  if (words.length >= 2 && specificity >= 1) return true;
   return specificity >= 2;
 }
 
@@ -428,7 +429,7 @@ function titleToDiscoveryCandidate(title) {
 }
 
 async function fetchEbayDiscoveryTerms(seedTerms) {
-  const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, 14);
+  const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, 28);
   const discovered = [];
 
   for (const seed of seeds) {
@@ -467,7 +468,16 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
     seen.add(key);
     deduped.push(term);
   }
-  return applyDiversityCaps(deduped, Number(process.env.EBAY_DISCOVERY_BUCKET_CAP || 4)).slice(0, Number(process.env.MAX_EBAY_DISCOVERY_TERMS || 120));
+  const kept = applyDiversityCaps(
+    deduped,
+    Number(process.env.EBAY_DISCOVERY_BUCKET_CAP || 8)
+  ).slice(0, Number(process.env.MAX_EBAY_DISCOVERY_TERMS || 250));
+
+  console.log(
+    `📊 eBay discovery stats: seeds=${seeds.length} raw=${discovered.length} deduped=${deduped.length} kept=${kept.length}`
+  );
+
+  return kept;
 }
 
 async function classifyFashionTermsWithAI(rawTerms) {
@@ -560,9 +570,13 @@ async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTe
     : [];
 
   const candidates = [...new Set(rawCandidates)].filter(shouldUseTrendTerm);
-  const minAccepted = Math.max(12, Number(process.env.MIN_AI_ACCEPTED_CANDIDATES || 24));
-  const minAcceptanceRate = Math.max(0.1, Math.min(1, Number(process.env.MIN_AI_ACCEPTANCE_RATE || 0.2)));
+  const minAccepted = Math.max(8, Number(process.env.MIN_AI_ACCEPTED_CANDIDATES || 12));
+  const minAcceptanceRate = Math.max(0.08, Math.min(1, Number(process.env.MIN_AI_ACCEPTANCE_RATE || 0.1)));
   const acceptanceRate = rawCandidates.length ? candidates.length / rawCandidates.length : 0;
+
+  console.log(
+    `📊 Corpus AI filter stats: raw=${rawCandidates.length} strictFiltered=${candidates.length} acceptance=${acceptanceRate.toFixed(2)}`
+  );
 
   if (candidates.length < minAccepted || acceptanceRate < minAcceptanceRate) {
     throw new Error(
@@ -615,7 +629,11 @@ async function fetchGoogleTrendsTerms() {
   }
 
   const uniqueRaw = [...new Set(rawTerms.map((t) => t.trim()))].filter(Boolean);
-  const uniqueFiltered = [...new Set(filteredTerms.map((t) => t.trim()))].filter(shouldUseTrendTerm);
+  const keywordFiltered = [...new Set(filteredTerms.map((t) => t.trim()))];
+  const uniqueFiltered = keywordFiltered.filter(shouldUseTrendTerm);
+  console.log(
+    `📊 Google Trends filter stats: raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strictFiltered=${uniqueFiltered.length}`
+  );
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
 
@@ -704,7 +722,11 @@ function mergeDiscoveredTerms(activeQueryPacks, googleTrendsTerms) {
     deduped.push(term);
   }
 
-  return applyDiversityCaps(deduped, Number(process.env.TERM_BUCKET_CAP || 6));
+  const kept = applyDiversityCaps(deduped, Number(process.env.TERM_BUCKET_CAP || 10));
+  console.log(
+    `📊 Merge stats: activePacks=${activeQueryPacks.length} input=${googleTrendsTerms.length} deduped=${deduped.length} kept=${kept.length}`
+  );
+  return kept;
 }
 
 async function seedSignalsFromSources(existingSignals, discoveredTerms) {
