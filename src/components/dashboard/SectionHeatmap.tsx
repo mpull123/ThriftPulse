@@ -83,6 +83,7 @@ export default function SectionHeatmap({
   const [data, setData] = useState<any[]>(signals);
   const [loading, setLoading] = useState(signals.length === 0);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [sortMode, setSortMode] = useState<"heat" | "mentions" | "signal">("signal");
 
   // If props are passed (from parent fetch), use them
   useEffect(() => {
@@ -116,13 +117,25 @@ export default function SectionHeatmap({
       mentions,
       signalScore,
       confidence,
-      isCompStale: isCompStale(latestComp),
+      compStatus: !latestComp ? "none" : isCompStale(latestComp) ? "stale" : "fresh",
     };
   });
 
-  const visibleData = verifiedOnly
+  const filteredData = verifiedOnly
     ? enrichedData.filter((item) => item.confidence === "high" || item.confidence === "med")
     : enrichedData;
+
+  const visibleData = [...filteredData].sort((a, b) => {
+    if (sortMode === "mentions") return (b.mentions || 0) - (a.mentions || 0);
+    if (sortMode === "heat") return (b.heat_score || 0) - (a.heat_score || 0);
+    return (b.signalScore || 0) - (a.signalScore || 0);
+  });
+
+  const noCompCount = visibleData.filter((item) => item.compStatus === "none").length;
+  const hotCount = visibleData.filter((item) => (item.heat_score || 0) >= 85).length;
+  const avgMentions = visibleData.length
+    ? Math.round(visibleData.reduce((sum, item) => sum + (item.mentions || 0), 0) / visibleData.length)
+    : 0;
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
@@ -149,16 +162,45 @@ export default function SectionHeatmap({
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
           Trends now mirror Research metrics: mentions, signal score, and confidence.
         </p>
-        <button
-          onClick={() => setVerifiedOnly(!verifiedOnly)}
-          className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
-            verifiedOnly
-              ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40"
-              : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"
-          }`}
-        >
-          {verifiedOnly ? "Verified Only: On" : "Verified Only: Off"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSortMode("signal")}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${sortMode === "signal" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
+          >
+            Sort: Signal
+          </button>
+          <button
+            onClick={() => setSortMode("mentions")}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${sortMode === "mentions" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
+          >
+            Mentions
+          </button>
+          <button
+            onClick={() => setVerifiedOnly(!verifiedOnly)}
+            className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
+              verifiedOnly
+                ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40"
+                : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"
+            }`}
+          >
+            {verifiedOnly ? "Verified: On" : "Verified: Off"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Hot Trends (85+)</p>
+          <p className="text-2xl font-black italic text-emerald-500">{hotCount}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Avg Mentions</p>
+          <p className="text-2xl font-black italic text-blue-500">{avgMentions}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">No Comps Yet</p>
+          <p className="text-2xl font-black italic text-amber-500">{noCompCount}</p>
+        </div>
       </div>
 
       {/* HEATMAP GRID */}
@@ -191,11 +233,9 @@ function HeatmapTile({ item }: { item: any }) {
           {item.heat_score || 0}%
         </span>
         <div className="flex items-center gap-1">
-          {item.isCompStale && (
-            <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-500 text-[8px] font-black uppercase">
-              Stale
-            </span>
-          )}
+          {item.compStatus === "none" && <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 text-[8px] font-black uppercase">No Comps</span>}
+          {item.compStatus === "stale" && <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-500 text-[8px] font-black uppercase">Stale</span>}
+          {item.compStatus === "fresh" && <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 text-[8px] font-black uppercase">Fresh</span>}
           {isHot && <Zap size={12} className="text-emerald-500 fill-current" />}
         </div>
       </div>
