@@ -107,7 +107,7 @@ export default function DashboardPage() {
   const [selectedNode, setSelectedNode] = useState<any>(null); 
   const [trunk, setTrunk] = useState<any[]>([]);
   const [crossPageFocus, setCrossPageFocus] = useState("");
-  const [isTrunkCollapsed, setIsTrunkCollapsed] = useState(false);
+  const [isTrunkCollapsed, setIsTrunkCollapsed] = useState(true);
 
   // --- REAL DATA STATE ---
   const [realInventory, setRealInventory] = useState<any[]>([]);
@@ -133,9 +133,9 @@ export default function DashboardPage() {
     fetchRealData();
     try {
       const raw = localStorage.getItem(TRUNK_COLLAPSED_STORAGE_KEY);
-      setIsTrunkCollapsed(raw === "1");
+      setIsTrunkCollapsed(raw === null ? true : raw === "1");
     } catch {
-      setIsTrunkCollapsed(false);
+      setIsTrunkCollapsed(true);
     }
   }, []);
 
@@ -329,11 +329,11 @@ export default function DashboardPage() {
 
         <nav className="space-y-1.5 flex-1">
           <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={navigateView} color="emerald" />
+          <NavButton label="Radar" id="analysis" icon={Activity} active={activeView} set={navigateView} color="rose" />
           <NavButton label="Decision Lab" id="scout" icon={Radar} active={activeView} set={navigateView} color="emerald" />
           <NavButton label="Store Map" id="hunt" icon={Map} active={activeView} set={navigateView} color="blue" />
           <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={navigateView} color="purple" />
           <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={navigateView} color="amber" />
-          <NavButton label="Radar" id="analysis" icon={Activity} active={activeView} set={navigateView} color="rose" />
           <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={navigateView} color="emerald" />
         </nav>
 
