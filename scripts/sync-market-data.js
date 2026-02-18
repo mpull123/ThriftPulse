@@ -1,6 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const cheerio = require('cheerio');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const feedConfig = require('./config/fashion-rss-feeds.json');
 
 // INITIALIZE SUPABASE
 // Using the exact names from your GitHub Secrets
@@ -21,6 +22,9 @@ const FASHION_CORPUS_SOURCES = [
   'https://www.glamour.com/feed/rss',
   'https://www.depop.com/blog/feed/'
 ];
+const EXTRA_PUBLICATION_FEEDS = Array.isArray(feedConfig?.publication_feeds) ? feedConfig.publication_feeds : [];
+const FASHION_RSS_FEEDS = [...new Set([...FASHION_CORPUS_SOURCES, ...EXTRA_PUBLICATION_FEEDS])];
+const GOOGLE_NEWS_QUERY_TERMS = Array.isArray(feedConfig?.google_news_queries) ? feedConfig.google_news_queries : [];
 
 function safeNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -166,6 +170,77 @@ function decodeXmlEntities(text) {
 
 function compactWhitespace(text) {
   return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function stripFeedTitleSource(text) {
+  return compactWhitespace(String(text || '').replace(/\s+[-|]\s+[^-|]{2,40}$/, ''));
+}
+
+function toGoogleNewsRssUrl(query) {
+  const q = compactWhitespace(query);
+  if (!q) return '';
+  return `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
+}
+
+async function fetchRssHeadlinesFromUrls(urls, {
+  maxPerFeed = 25,
+  maxTotal = 1200,
+  timeoutMs = 14000,
+} = {}) {
+  const feedUrls = [...new Set((urls || []).map((u) => compactWhitespace(u)).filter(Boolean))];
+  const headlines = [];
+  let successFeeds = 0;
+  let failedFeeds = 0;
+
+  for (const url of feedUrls) {
+    if (headlines.length >= maxTotal) break;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'thriftpulse-sync/1.0',
+          Accept: 'application/rss+xml, application/xml, text/xml;q=0.9, text/html;q=0.8, */*;q=0.7'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      const body = await res.text();
+      if (!res.ok) {
+        failedFeeds += 1;
+        continue;
+      }
+
+      const matches = [...body.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)];
+      if (matches.length > 0) {
+        const feedTitles = matches
+          .map((m) => stripFeedTitleSource(decodeXmlEntities(m[1])))
+          .filter(Boolean)
+          .slice(0, maxPerFeed);
+        if (feedTitles.length > 0) successFeeds += 1;
+        headlines.push(...feedTitles);
+        continue;
+      }
+
+      const atomMatches = [...body.matchAll(/<entry>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/entry>/gi)];
+      const atomTitles = atomMatches
+        .map((m) => stripFeedTitleSource(decodeXmlEntities(m[1])))
+        .filter(Boolean)
+        .slice(0, maxPerFeed);
+      if (atomTitles.length > 0) successFeeds += 1;
+      else failedFeeds += 1;
+      headlines.push(...atomTitles);
+    } catch (_err) {
+      failedFeeds += 1;
+    }
+  }
+
+  return {
+    headlines: [...new Set(headlines)].slice(0, maxTotal),
+    feedCount: feedUrls.length,
+    successFeeds,
+    failedFeeds,
+  };
 }
 
 function extractJsonObject(text) {
@@ -508,38 +583,76 @@ async function classifyFashionTermsWithAI(rawTerms) {
 }
 
 async function fetchFashionCorpusHeadlines() {
-  const headlines = [];
+  const { headlines } = await fetchRssHeadlinesFromUrls(FASHION_CORPUS_SOURCES, {
+    maxPerFeed: 28,
+    maxTotal: 350,
+  });
+  return headlines.filter((h) => h.length >= 8 && h.length <= 120).slice(0, 220);
+}
 
-  for (const url of FASHION_CORPUS_SOURCES) {
-    try {
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'thriftpulse-sync/1.0',
-          Accept: 'application/rss+xml, application/xml, text/html;q=0.9, */*;q=0.8'
-        }
-      });
-      const body = await res.text();
-      if (!res.ok) continue;
-
-      if (/<item>/i.test(body)) {
-        const rssTitles = [...body.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)]
-          .map((m) => compactWhitespace(decodeXmlEntities(m[1])))
-          .filter(Boolean);
-        headlines.push(...rssTitles);
-        continue;
-      }
-
-      const $ = cheerio.load(body);
-      const htmlTitles = [
-        ...$('h1,h2,h3,a[title]').map((_, el) => compactWhitespace($(el).text() || $(el).attr('title'))).get()
-      ].filter(Boolean);
-      headlines.push(...htmlTitles);
-    } catch (err) {
-      console.warn(`fashion corpus fetch failed (${url}):`, err.message);
+async function fetchFashionRssTerms() {
+  const { headlines, feedCount, successFeeds, failedFeeds } = await fetchRssHeadlinesFromUrls(FASHION_RSS_FEEDS, {
+    maxPerFeed: Number(process.env.MAX_FASHION_RSS_ITEMS_PER_FEED || 20),
+    maxTotal: Number(process.env.MAX_FASHION_RSS_HEADLINES || 1400),
+  });
+  const rawTerms = [];
+  const filteredTerms = [];
+  for (const title of headlines) {
+    for (const term of extractTermsFromTrendTitle(title)) {
+      rawTerms.push(term);
+      if (isFashionTerm(term)) filteredTerms.push(term);
     }
   }
 
-  return [...new Set(headlines)].filter((h) => h.length >= 8 && h.length <= 120).slice(0, 200);
+  const uniqueRaw = [...new Set(rawTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const keywordFiltered = [...new Set(filteredTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const strict = applyDiversityCaps(
+    keywordFiltered.filter(shouldUseTrendTerm).map(normalizeTrendTerm),
+    Number(process.env.FASHION_RSS_BUCKET_CAP || 12)
+  ).slice(0, Number(process.env.MAX_FASHION_RSS_TERMS || 320));
+
+  return {
+    rawTerms: uniqueRaw,
+    filteredTerms: strict,
+    feedCount,
+    successFeeds,
+    failedFeeds,
+    headlineCount: headlines.length,
+  };
+}
+
+async function fetchGoogleNewsRssTerms() {
+  const queryLimit = Math.max(1, Number(process.env.GOOGLE_NEWS_QUERY_LIMIT || 120));
+  const urls = GOOGLE_NEWS_QUERY_TERMS.slice(0, queryLimit).map(toGoogleNewsRssUrl).filter(Boolean);
+  const { headlines, feedCount, successFeeds, failedFeeds } = await fetchRssHeadlinesFromUrls(urls, {
+    maxPerFeed: Number(process.env.MAX_GOOGLE_NEWS_ITEMS_PER_FEED || 12),
+    maxTotal: Number(process.env.MAX_GOOGLE_NEWS_HEADLINES || 1600),
+  });
+
+  const rawTerms = [];
+  const filteredTerms = [];
+  for (const title of headlines) {
+    for (const term of extractTermsFromTrendTitle(title)) {
+      rawTerms.push(term);
+      if (isFashionTerm(term)) filteredTerms.push(term);
+    }
+  }
+
+  const uniqueRaw = [...new Set(rawTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const keywordFiltered = [...new Set(filteredTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const strict = applyDiversityCaps(
+    keywordFiltered.filter(shouldUseTrendTerm).map(normalizeTrendTerm),
+    Number(process.env.GOOGLE_NEWS_BUCKET_CAP || 14)
+  ).slice(0, Number(process.env.MAX_GOOGLE_NEWS_TERMS || 380));
+
+  return {
+    rawTerms: uniqueRaw,
+    filteredTerms: strict,
+    feedCount,
+    successFeeds,
+    failedFeeds,
+    headlineCount: headlines.length,
+  };
 }
 
 async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTerms) {
@@ -667,17 +780,21 @@ function calculateHeatScoreFromFreeSignals({
 
 function calculateMentionCount({
   ebaySampleCount,
+  fashionRssHit,
+  googleNewsHit,
   googleTrendHit,
   corpusHit,
   discoveryHit,
   compSampleSize = 0
 }) {
   const ebay = safeNumber(ebaySampleCount, 0);
+  const fashionRss = fashionRssHit ? 9 : 0;
+  const googleNews = googleNewsHit ? 9 : 0;
   const google = googleTrendHit ? 10 : 0;
   const corpus = corpusHit ? 7 : 0;
   const discovery = discoveryHit ? 5 : 0;
   const comp = Math.min(20, safeNumber(compSampleSize, 0) * 2);
-  return Math.max(0, Math.round(ebay + google + corpus + discovery + comp));
+  return Math.max(0, Math.round(ebay + fashionRss + googleNews + google + corpus + discovery + comp));
 }
 
 function calculateSignalScore({
@@ -769,6 +886,8 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
             source_signal_count: 2,
             mention_count: calculateMentionCount({
               ebaySampleCount: sampleCount,
+              fashionRssHit: false,
+              googleNewsHit: false,
               googleTrendHit: true,
               corpusHit: false,
               discoveryHit: false,
@@ -809,10 +928,14 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
 
 async function syncMarketPulse() {
   console.log("🚀 Starting Zero-API Market Sync...");
+  const fashionRssJobId = await startCollectorJob('fashion_rss');
+  const googleNewsJobId = await startCollectorJob('google_news_rss');
   const googleJobId = await startCollectorJob('google_trends');
   const corpusJobId = await startCollectorJob('fashion_corpus_ai');
   const ebayDiscoveryJobId = await startCollectorJob('ebay_discovery');
   const ebayJobId = await startCollectorJob('ebay');
+  let fashionRssFailures = 0;
+  let googleNewsFailures = 0;
   let ebayFailures = 0;
   let ebayNoSampleCount = 0;
   let googleFailures = 0;
@@ -820,9 +943,51 @@ async function syncMarketPulse() {
   let ebayDiscoveryFailures = 0;
 
   try {
+    let fashionRssTerms = [];
+    let googleNewsTerms = [];
     let googleTrendsTerms = [];
     let corpusAiTerms = [];
     let ebayDiscoveryTerms = [];
+    try {
+      const rss = await fetchFashionRssTerms();
+      let aiTerms = null;
+      try {
+        aiTerms = await classifyFashionTermsWithAI(rss.rawTerms);
+      } catch (err) {
+        console.warn('Fashion RSS AI classifier unavailable, falling back to strict keyword filter:', err.message);
+      }
+      fashionRssTerms = (aiTerms && aiTerms.length > 0) ? aiTerms : rss.filteredTerms;
+      await finishCollectorJob(
+        fashionRssJobId,
+        'success',
+        `Scanned ${rss.feedCount} fashion RSS feeds (${rss.successFeeds} ok, ${rss.failedFeeds} failed) and captured ${fashionRssTerms.length} terms from ${rss.headlineCount} headlines.`
+      );
+    } catch (err) {
+      fashionRssFailures += 1;
+      await finishCollectorJob(fashionRssJobId, 'degraded', err.message);
+      console.error('❌ Fashion RSS fetch failed:', err.message);
+    }
+
+    try {
+      const news = await fetchGoogleNewsRssTerms();
+      let aiTerms = null;
+      try {
+        aiTerms = await classifyFashionTermsWithAI(news.rawTerms);
+      } catch (err) {
+        console.warn('Google News RSS AI classifier unavailable, falling back to strict keyword filter:', err.message);
+      }
+      googleNewsTerms = (aiTerms && aiTerms.length > 0) ? aiTerms : news.filteredTerms;
+      await finishCollectorJob(
+        googleNewsJobId,
+        'success',
+        `Scanned ${news.feedCount} Google News fashion RSS queries (${news.successFeeds} ok, ${news.failedFeeds} failed) and captured ${googleNewsTerms.length} terms from ${news.headlineCount} headlines.`
+      );
+    } catch (err) {
+      googleNewsFailures += 1;
+      await finishCollectorJob(googleNewsJobId, 'degraded', err.message);
+      console.error('❌ Google News RSS fetch failed:', err.message);
+    }
+
     try {
       const { rawTerms, filteredTerms } = await fetchGoogleTrendsTerms();
       let aiTerms = null;
@@ -900,7 +1065,7 @@ async function syncMarketPulse() {
 
     const discoveredTerms = mergeDiscoveredTerms(
       activeQueryPacks,
-      [...googleTrendsTerms, ...corpusAiTerms, ...ebayDiscoveryTerms]
+      [...fashionRssTerms, ...googleNewsTerms, ...googleTrendsTerms, ...corpusAiTerms, ...ebayDiscoveryTerms]
     );
 
     // 1. Pull existing signals from database
@@ -921,6 +1086,8 @@ async function syncMarketPulse() {
       return;
     }
 
+    const fashionRssSet = new Set(fashionRssTerms.map((t) => t.toLowerCase()));
+    const googleNewsSet = new Set(googleNewsTerms.map((t) => t.toLowerCase()));
     const googleSet = new Set(googleTrendsTerms.map((t) => t.toLowerCase()));
     const corpusSet = new Set(corpusAiTerms.map((t) => String(t || '').toLowerCase()));
     const discoverySet = new Set(ebayDiscoveryTerms.map((t) => String(t || '').toLowerCase()));
@@ -955,16 +1122,22 @@ async function syncMarketPulse() {
       });
 
       const signalKey = String(signal.trend_name || '').toLowerCase().trim();
+      const fashionRssHit = fashionRssSet.has(signalKey);
+      const googleNewsHit = googleNewsSet.has(signalKey);
       const googleTrendHit = googleSet.has(signalKey);
       const corpusHit = corpusSet.has(signalKey);
       const discoveryHit = discoverySet.has(signalKey);
       const sourceSignalCount =
         (sampleCount > 0 ? 1 : 0) +
+        (fashionRssHit ? 1 : 0) +
+        (googleNewsHit ? 1 : 0) +
         (googleTrendHit ? 1 : 0) +
         (corpusHit ? 1 : 0) +
         (discoveryHit ? 1 : 0);
       const mentionCount = calculateMentionCount({
         ebaySampleCount: sampleCount,
+        fashionRssHit,
+        googleNewsHit,
         googleTrendHit,
         corpusHit,
         discoveryHit,
@@ -1024,6 +1197,16 @@ async function syncMarketPulse() {
     console.log("🏁 Sync process finished successfully.");
 
   } catch (err) {
+    if (fashionRssFailures > 0) {
+      await finishCollectorJob(fashionRssJobId, 'degraded', err.message);
+    } else {
+      await finishCollectorJob(fashionRssJobId, 'failed', err.message);
+    }
+    if (googleNewsFailures > 0) {
+      await finishCollectorJob(googleNewsJobId, 'degraded', err.message);
+    } else {
+      await finishCollectorJob(googleNewsJobId, 'failed', err.message);
+    }
     if (googleFailures > 0) {
       await finishCollectorJob(googleJobId, 'degraded', err.message);
     } else {

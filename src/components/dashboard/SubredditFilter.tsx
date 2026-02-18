@@ -83,7 +83,14 @@ export default function SubredditFilter() {
   }, [compChecks]);
 
   const sourceRows = useMemo(() => {
-    const preferredSources = ["ebay", "fashion_corpus_ai", "google_trends", "ebay_discovery"];
+    const preferredSources = [
+      "ebay",
+      "fashion_rss",
+      "google_news_rss",
+      "fashion_corpus_ai",
+      "google_trends",
+      "ebay_discovery",
+    ];
     return preferredSources.map((source) => {
       const run = latestBySource.get(source);
       const status = String(run?.status || "missing").toLowerCase();
