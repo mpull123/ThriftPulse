@@ -6,25 +6,6 @@ const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch
 // Using the exact names from your GitHub Secrets
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-const DEFAULT_SUBREDDITS = [
-  'malefashionadvice',
-  'femalefashionadvice',
-  'fashion',
-  'PetiteFashionAdvice',
-  'mensfashion',
-  'streetwear',
-  'OUTFITS',
-  'Sneakers',
-  'frugalmalefashion',
-  'FrugalFemaleFashion',
-  'rawdenim',
-  'VintageFashion',
-  'thrifting',
-  'ThriftStoreHauls',
-  'Goodwill_Finds',
-  'SecondHandFinds'
-];
-
 const FASHION_CORPUS_SOURCES = [
   'https://www.highsnobiety.com/feed/',
   'https://hypebeast.com/feed',
@@ -40,16 +21,6 @@ const FASHION_CORPUS_SOURCES = [
   'https://www.glamour.com/feed/rss',
   'https://www.depop.com/blog/feed/'
 ];
-
-function getTargetSubreddits() {
-  const fromEnv = String(process.env.REDDIT_SUBREDDITS || '')
-    .split(',')
-    .map((v) => v.replace(/^r\//i, '').trim())
-    .filter(Boolean);
-
-  const list = fromEnv.length ? fromEnv : DEFAULT_SUBREDDITS;
-  return [...new Set(list)];
-}
 
 function safeNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -142,163 +113,6 @@ async function fetchEbayStats(term, fallbackPrice) {
   };
 }
 
-async function fetchRedditMentionCount(term) {
-  const subreddits = getTargetSubreddits();
-  let oauthError = null;
-  try {
-    const oauthCount = await fetchRedditMentionCountOAuth(term);
-    if (oauthCount !== null) return oauthCount;
-  } catch (err) {
-    oauthError = err.message;
-  }
-
-  const encodedTerm = encodeURIComponent(`"${term}"`);
-  const candidates = subreddits.flatMap((subreddit) => ([
-    `https://www.reddit.com/r/${subreddit}/search.json?restrict_sr=1&sort=new&t=week&limit=50&q=${encodedTerm}`,
-    `https://www.reddit.com/r/${subreddit}/search.json?raw_json=1&restrict_sr=1&sort=relevance&t=week&limit=50&q=${encodedTerm}`
-  ]));
-  const headersList = [
-    {
-      'User-Agent': 'thriftpulse-sync/1.0',
-      Accept: 'application/json'
-    },
-    {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      Accept: 'application/json'
-    }
-  ];
-
-  let lastError = oauthError || 'Unknown reddit error';
-  for (const url of candidates) {
-    for (const headers of headersList) {
-      try {
-        const redditRes = await fetch(url, { headers });
-        const bodyText = await redditRes.text();
-
-        if (!redditRes.ok) {
-          const snippet = bodyText.slice(0, 120).replace(/\s+/g, ' ');
-          lastError = `status=${redditRes.status} endpoint=${url} body="${snippet}"`;
-          continue;
-        }
-
-        let redditJson = null;
-        try {
-          redditJson = JSON.parse(bodyText);
-        } catch (parseErr) {
-          lastError = `json_parse_failed endpoint=${url} msg=${parseErr.message}`;
-          continue;
-        }
-
-        const posts = redditJson?.data?.children || [];
-        if (!Array.isArray(posts)) {
-          lastError = `invalid_payload endpoint=${url}`;
-          continue;
-        }
-        if (posts.length === 0) return 0;
-
-        const termRegex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
-        let mentions = 0;
-
-        for (const post of posts) {
-          const title = post?.data?.title || '';
-          const selfText = post?.data?.selftext || '';
-          mentions += (title.match(termRegex) || []).length;
-          mentions += (selfText.match(termRegex) || []).length;
-        }
-
-        // Use at least post count as weak signal if exact term is sparse in text.
-        return Math.max(mentions, posts.length);
-      } catch (err) {
-        lastError = `network_error endpoint=${url} msg=${err.message}`;
-      }
-    }
-  }
-
-  throw new Error(lastError);
-}
-
-async function fetchRedditMentionCountOAuth(term) {
-  const subreddits = getTargetSubreddits();
-  const clientId = process.env.REDDIT_CLIENT_ID;
-  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
-  const userAgent = process.env.REDDIT_USER_AGENT || 'thriftpulse-sync/1.0';
-
-  if (!clientId || !clientSecret) return null;
-
-  const authToken = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-  const tokenRes = await fetch('https://www.reddit.com/api/v1/access_token', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${authToken}`,
-      'User-Agent': userAgent,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'grant_type=client_credentials'
-  });
-
-  const tokenText = await tokenRes.text();
-  if (!tokenRes.ok) {
-    const snippet = tokenText.slice(0, 120).replace(/\s+/g, ' ');
-    throw new Error(`oauth_token_failed status=${tokenRes.status} body="${snippet}"`);
-  }
-
-  let tokenJson = null;
-  try {
-    tokenJson = JSON.parse(tokenText);
-  } catch (err) {
-    throw new Error(`oauth_token_parse_failed ${err.message}`);
-  }
-
-  const accessToken = tokenJson?.access_token;
-  if (!accessToken) throw new Error('oauth_token_missing_access_token');
-
-  const termRegex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
-  let totalMentions = 0;
-  let totalPosts = 0;
-  let lastError = null;
-
-  for (const subreddit of subreddits) {
-    const url = `https://oauth.reddit.com/r/${subreddit}/search?restrict_sr=1&q=${encodeURIComponent(`"${term}"`)}&sort=new&t=week&limit=50`;
-    const searchRes = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'User-Agent': userAgent,
-        Accept: 'application/json'
-      }
-    });
-
-    const bodyText = await searchRes.text();
-    if (!searchRes.ok) {
-      const snippet = bodyText.slice(0, 120).replace(/\s+/g, ' ');
-      lastError = `oauth_search_failed status=${searchRes.status} subreddit=${subreddit} body="${snippet}"`;
-      continue;
-    }
-
-    let searchJson = null;
-    try {
-      searchJson = JSON.parse(bodyText);
-    } catch (err) {
-      lastError = `oauth_search_parse_failed subreddit=${subreddit} ${err.message}`;
-      continue;
-    }
-
-    const posts = searchJson?.data?.children || [];
-    if (!Array.isArray(posts)) continue;
-    totalPosts += posts.length;
-
-    for (const post of posts) {
-      const title = post?.data?.title || '';
-      const selfText = post?.data?.selftext || '';
-      totalMentions += (title.match(termRegex) || []).length;
-      totalMentions += (selfText.match(termRegex) || []).length;
-    }
-  }
-
-  if (totalPosts > 0) return Math.max(totalMentions, totalPosts);
-  if (lastError) throw new Error(lastError);
-  return 0;
-}
 
 function decodeXmlEntities(text) {
   return text
@@ -655,17 +469,12 @@ async function fetchGoogleTrendsTerms() {
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
 
-function hasRedditCredentials() {
-  return Boolean(process.env.REDDIT_CLIENT_ID && process.env.REDDIT_CLIENT_SECRET);
-}
-
 function calculateHeatScoreFromFreeSignals({
   previousHeat,
   ebaySampleCount,
   previousPrice,
   currentPrice,
-  googleTrendBoost,
-  redditMentions
+  googleTrendBoost
 }) {
   const prevHeat = safeNumber(previousHeat, 50);
   const prev = safeNumber(previousPrice, 0);
@@ -678,14 +487,13 @@ function calculateHeatScoreFromFreeSignals({
     priceDeltaScore = Math.max(-12, Math.min(20, Math.round(deltaPct / 2)));
   }
 
-  const redditScore = redditMentions > 0 ? Math.min(25, redditMentions) : 0;
   const trendBoostScore = googleTrendBoost ? 15 : 0;
 
-  if (sampleScore === 0 && !googleTrendBoost && redditScore === 0) {
+  if (sampleScore === 0 && !googleTrendBoost) {
     return prevHeat;
   }
 
-  const blended = 35 + sampleScore + priceDeltaScore + trendBoostScore + redditScore;
+  const blended = 35 + sampleScore + priceDeltaScore + trendBoostScore;
   return Math.max(20, Math.min(99, blended));
 }
 
@@ -779,14 +587,11 @@ async function syncMarketPulse() {
   const corpusJobId = await startCollectorJob('fashion_corpus_ai');
   const ebayDiscoveryJobId = await startCollectorJob('ebay_discovery');
   const ebayJobId = await startCollectorJob('ebay');
-  const redditJobId = await startCollectorJob('reddit');
   let ebayFailures = 0;
   let ebayNoSampleCount = 0;
   let googleFailures = 0;
   let corpusFailures = 0;
   let ebayDiscoveryFailures = 0;
-  let redditFailures = 0;
-  const redditFailureDetails = [];
 
   try {
     let googleTrendsTerms = [];
@@ -886,18 +691,8 @@ async function syncMarketPulse() {
     if (refetchError) throw refetchError;
     if (!signals || signals.length === 0) {
       console.log("⚠️ No signals found in database to sync.");
-      await finishCollectorJob(redditJobId, 'skipped_no_signals', 'No signals found to sync.');
       await finishCollectorJob(ebayJobId, 'failed', 'No signals found to sync.');
       return;
-    }
-
-    const redditEnabled = hasRedditCredentials();
-    if (!redditEnabled) {
-      await finishCollectorJob(
-        redditJobId,
-        'skipped_no_api',
-        'Reddit credentials not configured; using Google Trends + eBay only.'
-      );
     }
 
     const googleSet = new Set(googleTrendsTerms.map((t) => t.toLowerCase()));
@@ -907,7 +702,6 @@ async function syncMarketPulse() {
 
       let avgPrice = safeNumber(signal.exit_price, 0);
       let sampleCount = 0;
-      let mentionCount = 0;
       const googleTrendBoost = googleSet.has(String(signal.trend_name || '').toLowerCase());
 
       try {
@@ -920,25 +714,12 @@ async function syncMarketPulse() {
         console.error(`❌ eBay fetch failed for ${signal.trend_name}:`, err.message);
       }
 
-      if (redditEnabled) {
-        try {
-          mentionCount = await fetchRedditMentionCount(signal.trend_name);
-        } catch (err) {
-          redditFailures += 1;
-          if (redditFailureDetails.length < 5) {
-            redditFailureDetails.push(`${signal.trend_name}: ${err.message}`);
-          }
-          console.error(`❌ Reddit fetch failed for ${signal.trend_name}:`, err.message);
-        }
-      }
-
       const newHeat = calculateHeatScoreFromFreeSignals({
         previousHeat: signal.heat_score,
         ebaySampleCount: sampleCount,
         previousPrice: signal.exit_price,
         currentPrice: avgPrice,
-        googleTrendBoost,
-        redditMentions: mentionCount
+        googleTrendBoost
       });
 
       // 2. UPDATE SUPABASE
@@ -954,7 +735,7 @@ async function syncMarketPulse() {
       if (upError) console.error(`❌ Update failed for ${signal.trend_name}:`, upError.message);
       else {
         console.log(
-          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | eBay Sample: ${sampleCount} | GoogleBoost: ${googleTrendBoost ? 'yes' : 'no'} | RedditMentions: ${mentionCount}`
+          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | eBay Sample: ${sampleCount} | GoogleBoost: ${googleTrendBoost ? 'yes' : 'no'}`
         );
       }
     }
@@ -968,16 +749,6 @@ async function syncMarketPulse() {
           ? `No eBay sold-price samples detected for all ${signals.length} signals.`
           : null
     );
-    if (redditEnabled) {
-      await finishCollectorJob(
-        redditJobId,
-        redditFailures > 0 ? 'degraded' : 'success',
-        redditFailures > 0
-          ? `${redditFailures} item(s) failed Reddit fetch. ${redditFailureDetails.join(' | ')}`
-          : null
-      );
-    }
-
     console.log("🏁 Sync process finished successfully.");
 
   } catch (err) {
@@ -996,7 +767,6 @@ async function syncMarketPulse() {
     } else {
       await finishCollectorJob(ebayDiscoveryJobId, 'failed', err.message);
     }
-    await finishCollectorJob(redditJobId, 'failed', err.message);
     await finishCollectorJob(ebayJobId, 'failed', err.message);
     console.error("❌ Critical Sync Error:", err.message);
   }
