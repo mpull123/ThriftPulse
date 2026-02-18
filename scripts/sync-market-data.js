@@ -312,13 +312,31 @@ function extractTermsFromTrendTitle(title) {
   const cleaned = decodeXmlEntities(String(title || '')).trim();
   if (!cleaned) return [];
 
+  const lowered = cleaned.toLowerCase();
+  const candidates = new Set();
+  const apparelNounPattern = /(jacket|coat|hoodie|sweatshirt|sweater|cardigan|tee|t-shirt|shirt|pants|jeans|trousers|skirt|dress|boots?|sneakers?|loafers?|bag|vest|parka|anorak)/g;
+  const qualifierPattern = /(vintage|oversized|cropped|wide-leg|high-waisted|double knee|cargo|graphic|leather|suede|wool|mohair|denim|selvedge|chunky|platform|chelsea|tabi|retro|boxy|distressed|washed|faded|tailored|raw|ripstop|nylon|corduroy|cashmere|knit|quilted|puffer|barn|moto|trench|track|parachute)/g;
+
+  const nounMatches = [...lowered.matchAll(apparelNounPattern)].map((m) => m[1]).filter(Boolean);
+  const qualifierMatches = [...lowered.matchAll(qualifierPattern)].map((m) => m[1]).filter(Boolean);
+  for (const noun of nounMatches.slice(0, 4)) {
+    for (const qualifier of qualifierMatches.slice(0, 4)) {
+      candidates.add(normalizeTrendTerm(`${qualifier} ${noun}`));
+    }
+  }
+
   // Google trend titles are often "A vs B" or "A, B, C".
   const parts = cleaned
     .split(/\s+vs\.?\s+|,/i)
     .map((s) => s.trim())
     .filter(Boolean);
 
-  return parts.length ? parts : [cleaned];
+  const combined = [
+    ...parts,
+    ...candidates,
+    cleaned,
+  ].map((v) => compactWhitespace(v)).filter(Boolean);
+  return [...new Set(combined)];
 }
 
 function isFashionTerm(term) {
@@ -370,6 +388,34 @@ function isSpecificFashionTerm(term) {
   return specificity >= 2;
 }
 
+function isEditorialNoiseTerm(term) {
+  const t = String(term || '').toLowerCase();
+  const blockedPhrases = [
+    'how to wear',
+    'what to wear',
+    'editors pick',
+    "editor's pick",
+    'best dressed',
+    'street style stars',
+    'fashion week recap',
+    'trend report',
+    'shopping guide',
+    'must have',
+    'lookbook',
+    'outfit ideas',
+    'celebrity style',
+    'watch now',
+    'podcast',
+    'interview',
+    'runway show',
+    'red carpet',
+    'met gala'
+  ];
+  if (blockedPhrases.some((p) => t.includes(p))) return true;
+  if (/[?!:]/.test(t) && t.split(/\s+/).length > 5) return true;
+  return false;
+}
+
 function isBlockedNonFashionTerm(term) {
   const t = String(term || '').toLowerCase();
   const blocked = [
@@ -384,6 +430,8 @@ function shouldUseTrendTerm(term) {
   const cleaned = String(term || '').trim();
   if (!cleaned) return false;
   if (cleaned.length < 4 || cleaned.length > 60) return false;
+  if (isEditorialNoiseTerm(cleaned)) return false;
+  if (cleaned.split(/\s+/).length > 6) return false;
   if (isBlockedNonFashionTerm(cleaned)) return false;
   if (!isFashionTerm(cleaned)) return false;
   return isSpecificFashionTerm(cleaned);
@@ -846,7 +894,7 @@ function mergeDiscoveredTerms(activeQueryPacks, googleTrendsTerms) {
   return kept;
 }
 
-async function seedSignalsFromSources(existingSignals, discoveredTerms) {
+async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSets = {}) {
   const existingNames = new Set(
     (existingSignals || []).map((s) => String(s.trend_name || '').trim().toLowerCase())
   );
@@ -857,9 +905,22 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
   let created = 0;
   for (const term of newTerms) {
     try {
+      const key = String(term || '').toLowerCase().trim();
+      const fashionRssHit = Boolean(sourceSets?.fashionRssSet?.has(key));
+      const googleNewsHit = Boolean(sourceSets?.googleNewsSet?.has(key));
+      const googleTrendHit = Boolean(sourceSets?.googleSet?.has(key));
+      const corpusHit = Boolean(sourceSets?.corpusSet?.has(key));
+      const discoveryHit = Boolean(sourceSets?.discoverySet?.has(key));
+      const nonEbaySignalCount =
+        (fashionRssHit ? 1 : 0) +
+        (googleNewsHit ? 1 : 0) +
+        (googleTrendHit ? 1 : 0) +
+        (corpusHit ? 1 : 0) +
+        (discoveryHit ? 1 : 0);
+
       const { avgPrice, sampleCount } = await fetchEbayStats(term, 60);
-      if (sampleCount < 3) {
-        console.log(`⏭️ Skipping low-signal discovery: ${term} (eBay sample ${sampleCount})`);
+      if (sampleCount < 3 || (sampleCount < 6 && nonEbaySignalCount === 0)) {
+        console.log(`⏭️ Skipping low-signal discovery: ${term} (eBay sample ${sampleCount}, source hints ${nonEbaySignalCount})`);
         continue;
       }
       const heatScore = calculateHeatScoreFromFreeSignals({
@@ -880,22 +941,22 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
             hook_brand: inferBrandFromTerm(term),
             market_sentiment: 'AI + eBay validated trend candidate.',
             ebay_sample_count: sampleCount,
-            google_trend_hits: 1,
-            ai_corpus_hits: 0,
-            ebay_discovery_hits: 0,
-            source_signal_count: 2,
+            google_trend_hits: googleTrendHit ? 1 : 0,
+            ai_corpus_hits: corpusHit ? 1 : 0,
+            ebay_discovery_hits: discoveryHit ? 1 : 0,
+            source_signal_count: (sampleCount > 0 ? 1 : 0) + nonEbaySignalCount,
             mention_count: calculateMentionCount({
               ebaySampleCount: sampleCount,
-              fashionRssHit: false,
-              googleNewsHit: false,
-              googleTrendHit: true,
-              corpusHit: false,
-              discoveryHit: false,
+              fashionRssHit,
+              googleNewsHit,
+              googleTrendHit,
+              corpusHit,
+              discoveryHit,
             }),
             confidence_score: calculateSignalScore({
               heatScore,
               ebaySampleCount: sampleCount,
-              sourceSignalCount: 2,
+              sourceSignalCount: (sampleCount > 0 ? 1 : 0) + nonEbaySignalCount,
             }),
             heat_score: heatScore,
             exit_price: Math.max(10, avgPrice),
@@ -914,7 +975,7 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
           notes: 'Discovery-mode sold comps snapshot.',
         });
         created += 1;
-        console.log(`🆕 Discovered trend: ${term} | Heat: ${heatScore} | $${avgPrice} | Sample: ${sampleCount}`);
+        console.log(`🆕 Discovered trend: ${term} | Heat: ${heatScore} | $${avgPrice} | Sample: ${sampleCount} | Source hints: ${nonEbaySignalCount}`);
       } else {
         console.error(`Discovery upsert failed (${term}):`, error.message);
       }
@@ -1067,12 +1128,23 @@ async function syncMarketPulse() {
       activeQueryPacks,
       [...fashionRssTerms, ...googleNewsTerms, ...googleTrendsTerms, ...corpusAiTerms, ...ebayDiscoveryTerms]
     );
+    const fashionRssSet = new Set(fashionRssTerms.map((t) => t.toLowerCase()));
+    const googleNewsSet = new Set(googleNewsTerms.map((t) => t.toLowerCase()));
+    const googleSet = new Set(googleTrendsTerms.map((t) => t.toLowerCase()));
+    const corpusSet = new Set(corpusAiTerms.map((t) => String(t || '').toLowerCase()));
+    const discoverySet = new Set(ebayDiscoveryTerms.map((t) => String(t || '').toLowerCase()));
 
     // 1. Pull existing signals from database
     const { data: initialSignals, error: sigError } = await supabase.from('market_signals').select('*');
     
     if (sigError) throw sigError;
-    const discoveredCount = await seedSignalsFromSources(initialSignals || [], discoveredTerms);
+    const discoveredCount = await seedSignalsFromSources(initialSignals || [], discoveredTerms, {
+      fashionRssSet,
+      googleNewsSet,
+      googleSet,
+      corpusSet,
+      discoverySet,
+    });
     if (discoveredCount > 0) {
       console.log(`✅ Added ${discoveredCount} discovered trend(s) from free sources.`);
     }
@@ -1085,12 +1157,6 @@ async function syncMarketPulse() {
       await finishCollectorJob(ebayJobId, 'failed', 'No signals found to sync.');
       return;
     }
-
-    const fashionRssSet = new Set(fashionRssTerms.map((t) => t.toLowerCase()));
-    const googleNewsSet = new Set(googleNewsTerms.map((t) => t.toLowerCase()));
-    const googleSet = new Set(googleTrendsTerms.map((t) => t.toLowerCase()));
-    const corpusSet = new Set(corpusAiTerms.map((t) => String(t || '').toLowerCase()));
-    const discoverySet = new Set(ebayDiscoveryTerms.map((t) => String(t || '').toLowerCase()));
 
     for (const signal of signals) {
       console.log(`🔍 Syncing: ${signal.trend_name}`);
