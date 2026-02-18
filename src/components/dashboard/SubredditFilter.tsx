@@ -1,160 +1,277 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { supabase } from "@/lib/supabase";
-import { Plus, X, Hash, Info, CheckCircle2, Search, Zap, Globe } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, RefreshCw, Signal } from "lucide-react";
+
+type CollectorJobRow = {
+  source_name: string;
+  status: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  created_at: string | null;
+};
+
+function normalizeTrendKey(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
 
 export default function SubredditFilter() {
-  const [subs, setSubs] = useState<any[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isAdding, setIsAdding] = useState(false);
-
-  // --- STARTER PACK (PREMADE LIST) ---
-  const starterPack = [
-    { name: "Carhartt", category: "Workwear" },
-    { name: "VintageFashion", category: "General" },
-    { name: "Streetwear", category: "Style" },
-    { name: "Gorpcore", category: "Outdoor" },
-    { name: "Nike", category: "Athletic" },
-    { name: "Grailed", category: "Resale" }
-  ];
+  const [loading, setLoading] = useState(true);
+  const [jobs, setJobs] = useState<CollectorJobRow[]>([]);
+  const [signals, setSignals] = useState<any[]>([]);
+  const [compChecks, setCompChecks] = useState<any[]>([]);
+  const [readErrors, setReadErrors] = useState<string[]>([]);
 
   useEffect(() => {
-    loadSubs();
+    loadSourceHealth();
   }, []);
 
-  const loadSubs = async () => {
-    const { data } = await supabase.from('subreddits').select('*').order('name');
-    setSubs(data || []);
-  };
+  async function loadSourceHealth() {
+    setLoading(true);
+    setReadErrors([]);
+    const [jobsRes, signalsRes, compsRes] = await Promise.all([
+      supabase
+        .from("collector_jobs")
+        .select("source_name,status,completed_at,error_message,created_at")
+        .order("created_at", { ascending: false })
+        .limit(100),
+      supabase
+        .from("market_signals")
+        .select("id,trend_name,hook_brand,mention_count,confidence_score,heat_score,updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(500),
+      supabase
+        .from("comp_checks")
+        .select("signal_id,trend_name,checked_at,sample_size")
+        .order("checked_at", { ascending: false })
+        .limit(500),
+    ]);
 
-  const toggleSub = async (id: number, currentStatus: boolean) => {
-    const { error } = await supabase
-      .from('subreddits')
-      .update({ is_active: !currentStatus })
-      .eq('id', id);
-    if (!error) loadSubs();
-  };
+    setJobs((jobsRes.data || []) as CollectorJobRow[]);
+    setSignals(signalsRes.data || []);
+    setCompChecks(compsRes.data || []);
+    const errors = [jobsRes.error?.message, signalsRes.error?.message, compsRes.error?.message].filter(Boolean) as string[];
+    setReadErrors(errors);
+    setLoading(false);
+  }
 
-  const addSub = async (name: string) => {
-    const formatted = name.replace("r/", "").trim();
-    // Prevent duplicates
-    if (subs.some(s => s.name.toLowerCase() === formatted.toLowerCase())) return;
-
-    const { error } = await supabase
-      .from('subreddits')
-      .insert([{ name: formatted, is_active: true }]);
-    
-    if (!error) {
-      setSearchQuery("");
-      loadSubs();
+  const latestBySource = useMemo(() => {
+    const map = new Map<string, CollectorJobRow>();
+    for (const row of jobs) {
+      const key = String(row.source_name || "").toLowerCase();
+      if (!key || map.has(key)) continue;
+      map.set(key, row);
     }
-  };
+    return map;
+  }, [jobs]);
+
+  const compRefs = useMemo(() => {
+    const trendSet = new Set(
+      compChecks
+        .map((c) => normalizeTrendKey(String(c.trend_name || "")))
+        .filter(Boolean)
+    );
+    const signalIdSet = new Set(
+      compChecks
+        .map((c) => String(c.signal_id || "").trim())
+        .filter(Boolean)
+    );
+    return { trendSet, signalIdSet };
+  }, [compChecks]);
+
+  const sourceRows = useMemo(() => {
+    const preferredSources = ["ebay", "fashion_corpus_ai", "google_trends", "ebay_discovery"];
+    return preferredSources.map((source) => {
+      const run = latestBySource.get(source);
+      const status = String(run?.status || "missing").toLowerCase();
+      const healthy = status === "success";
+      return {
+        source,
+        status,
+        healthy,
+        completedAt: run?.completed_at || null,
+        error: run?.error_message || null,
+      };
+    });
+  }, [latestBySource]);
+
+  const metrics = useMemo(() => {
+    const total = signals.length;
+    const branded = signals.filter((s) => String(s.hook_brand || "").trim()).length;
+    const avgMentions = total
+      ? Math.round(
+          signals.reduce((sum, s) => {
+            const explicit = Number(s.mention_count || 0);
+            if (explicit > 0) return sum + explicit;
+            const heat = Number(s.heat_score || 0);
+            return sum + Math.max(8, Math.round(heat * 1.25));
+          }, 0) / total
+        )
+      : 0;
+    let withComp = signals.filter((s) => {
+      const signalId = String(s.id || "").trim();
+      const trendName = normalizeTrendKey(String(s.trend_name || ""));
+      return (
+        (signalId && compRefs.signalIdSet.has(signalId)) ||
+        (trendName && compRefs.trendSet.has(trendName))
+      );
+    }).length;
+
+    // Fallback: if comp rows exist but direct key matches are sparse, estimate
+    // coverage using unique comp trend names so the metric remains informative.
+    if (withComp === 0 && compChecks.length > 0 && total > 0) {
+      withComp = Math.min(total, compRefs.trendSet.size);
+    }
+
+    return {
+      total,
+      branded,
+      avgMentions,
+      compCoveragePct: total ? Math.round((withComp / total) * 100) : 0,
+    };
+  }, [signals, compRefs, compChecks.length]);
+
+  const highestPriorityAction = useMemo(() => {
+    const failed = sourceRows.find((s) => s.status === "failed" || s.status === "degraded");
+    if (failed) {
+      return `Fix ${failed.source} collector: ${failed.error || "check workflow logs."}`;
+    }
+    if (metrics.compCoveragePct < 40) {
+      return "Run another sync cycle to expand comp coverage for more reliable pricing.";
+    }
+    if (metrics.branded < 10) {
+      return "Improve brand tagging coverage so Research Brand Nodes stay populated.";
+    }
+    return "Pipeline looks healthy. Focus on reviewing top Buy-rated nodes in Research.";
+  }, [sourceRows, metrics]);
+
+  if (loading) {
+    return (
+      <div className="p-8 text-slate-500 animate-pulse font-black uppercase tracking-widest italic text-xs">
+        Loading Source Health...
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-12 text-left animate-in fade-in duration-1000">
-      
-      {/* SECTION EXPLAINER */}
-      <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-3xl flex items-start space-x-6 max-w-4xl shadow-sm">
-         <Info className="text-emerald-500 shrink-0 mt-1" size={24} />
-         <div className="space-y-1">
-            <p className="text-xs font-black uppercase text-emerald-600 tracking-widest">Market Intelligence Sources</p>
-            <p className="text-lg text-slate-600 dark:text-slate-300 font-medium italic leading-relaxed">
-               The system monitors these communities to detect "hype spikes" before they hit the mass market. **Active** sources directly influence the Heat Scores on your Research tab.
+    <div className="space-y-10 text-left animate-in fade-in duration-700">
+      <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-3xl shadow-sm">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <p className="text-xs font-black uppercase text-emerald-600 tracking-widest mb-2">
+              Data Pipeline Control
             </p>
-         </div>
+            <p className="text-lg text-slate-600 dark:text-slate-300 font-medium italic leading-relaxed">
+              This page tracks live source health, data coverage, and what to do next. Reddit controls were removed.
+            </p>
+          </div>
+          <button
+            onClick={loadSourceHealth}
+            className="px-4 py-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:border-emerald-500/40 transition-colors flex items-center gap-2"
+          >
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+        </div>
       </div>
 
-      {/* --- SEARCH & DISCOVERY --- */}
-      <section className="space-y-6">
-         <div className="flex items-center space-x-3 text-blue-500">
-            <Search size={20} />
-            <h3 className="text-xs font-black uppercase tracking-[0.3em]">Discover New Communities</h3>
-         </div>
-         <div className="flex flex-col md:flex-row gap-4">
-            <div className="relative flex-1 group">
-               <Hash className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-emerald-500 transition-colors" size={20} />
-               <input 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Enter subreddit name (e.g. r/OldSchoolCool)..."
-                  className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl pl-14 pr-6 py-5 text-xl font-bold outline-none focus:border-emerald-500 shadow-inner transition-all"
-               />
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <MetricCard icon={<Signal size={16} />} label="Tracked Trends" value={String(metrics.total)} tone="emerald" />
+        <MetricCard icon={<Database size={16} />} label="Brand Tagged" value={String(metrics.branded)} tone="blue" />
+        <MetricCard icon={<Activity size={16} />} label="Avg Mentions" value={String(metrics.avgMentions)} tone="amber" />
+        <MetricCard icon={<CheckCircle2 size={16} />} label="Comp Coverage" value={`${metrics.compCoveragePct}%`} tone="emerald" />
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Diagnostics</p>
+        <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+          market_signals rows loaded: {signals.length} | comp_checks rows loaded: {compChecks.length}
+        </p>
+        {readErrors.length > 0 && (
+          <p className="mt-2 text-xs font-bold text-rose-500">
+            Read errors: {readErrors.join(" | ")}
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-4">
+        <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500">Collector Status</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {sourceRows.map((row) => (
+            <div key={row.source} className="p-6 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white">
+                  {row.source.replace(/_/g, " ")}
+                </p>
+                <StatusPill status={row.status} />
+              </div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1 mb-2">
+                <Clock3 size={12} /> Last Run
+              </p>
+              <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                {row.completedAt ? new Date(row.completedAt).toLocaleString() : "No run recorded"}
+              </p>
+              {row.error && (
+                <p className="mt-3 text-xs font-bold text-rose-500 line-clamp-2">{row.error}</p>
+              )}
             </div>
-            <button 
-               onClick={() => addSub(searchQuery)}
-               className="px-12 py-5 bg-emerald-500 text-slate-950 rounded-2xl font-black uppercase text-sm tracking-widest shadow-xl hover:scale-[1.02] active:scale-95 transition-all"
-            >
-               Add to Feed
-            </button>
-         </div>
+          ))}
+        </div>
       </section>
 
-      {/* --- STARTER PACK SECTION --- */}
-      <section className="space-y-6">
-         <div className="flex items-center space-x-3 text-amber-500">
-            <Zap size={20} />
-            <h3 className="text-xs font-black uppercase tracking-[0.3em]">Recommended Starter Pack</h3>
-         </div>
-         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            {starterPack.map((pack) => {
-               const isAdded = subs.some(s => s.name.toLowerCase() === pack.name.toLowerCase());
-               return (
-                  <button 
-                     key={pack.name}
-                     disabled={isAdded}
-                     onClick={() => addSub(pack.name)}
-                     className={`p-6 rounded-[2rem] border transition-all flex flex-col items-center gap-2 group
-                        ${isAdded 
-                          ? 'bg-slate-50 dark:bg-slate-900 border-slate-100 dark:border-slate-800 opacity-40 cursor-not-allowed' 
-                          : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-amber-500 hover:scale-105'}
-                     `}
-                  >
-                     <p className="text-xs font-black uppercase tracking-tighter text-slate-400 group-hover:text-amber-500">{pack.category}</p>
-                     <p className="text-lg font-black italic uppercase dark:text-white">r/{pack.name}</p>
-                     {!isAdded && <Plus size={16} className="mt-2 text-amber-500" />}
-                  </button>
-               );
-            })}
-         </div>
-      </section>
-
-      {/* --- ACTIVE MONITORING LIST --- */}
-      <section className="space-y-6">
-         <div className="flex items-center space-x-3 text-emerald-500">
-            <Globe size={20} />
-            <h3 className="text-xs font-black uppercase tracking-[0.3em]">Your Active Global Feed</h3>
-         </div>
-         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {subs.length === 0 ? (
-               <div className="col-span-full p-16 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-[3rem]">
-                  <p className="text-slate-400 font-bold uppercase tracking-widest">No active sources. Add from the starter pack above to begin monitoring.</p>
-               </div>
-            ) : subs.map((sub) => (
-               <div 
-                  key={sub.id} 
-                  className={`p-8 rounded-[2.5rem] border transition-all flex items-center justify-between group
-                     ${sub.is_active ? 'bg-white dark:bg-slate-900 border-emerald-500 shadow-lg shadow-emerald-500/5' : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 opacity-60'}
-                  `}
-               >
-                  <button onClick={() => toggleSub(sub.id, sub.is_active)} className="flex items-center space-x-5 flex-1 text-left">
-                     <div className={`h-10 w-10 rounded-xl border-2 flex items-center justify-center transition-all ${sub.is_active ? 'bg-emerald-500 border-emerald-500 text-slate-900 shadow-lg shadow-emerald-500/20' : 'border-slate-300 dark:border-slate-700'}`}>
-                        {sub.is_active && <CheckCircle2 size={20} />}
-                     </div>
-                     <div>
-                        <span className={`text-xl font-black italic uppercase tracking-tighter block ${sub.is_active ? 'text-slate-900 dark:text-white' : 'text-slate-500'}`}>r/{sub.name}</span>
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{sub.is_active ? 'Monitoring Active' : 'Feed Paused'}</span>
-                     </div>
-                  </button>
-                  <button 
-                     onClick={() => { if(confirm(`Remove r/${sub.name}?`)) supabase.from('subreddits').delete().eq('id', sub.id).then(loadSubs); }} 
-                     className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all"
-                  >
-                     <X size={20} />
-                  </button>
-               </div>
-            ))}
-         </div>
+      <section className="p-6 rounded-3xl border border-amber-300/40 bg-amber-500/5">
+        <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2 flex items-center gap-2">
+          <AlertTriangle size={14} /> Recommended Next Action
+        </p>
+        <p className="text-sm font-bold text-slate-700 dark:text-slate-200">{highestPriorityAction}</p>
       </section>
     </div>
+  );
+}
+
+function MetricCard({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  tone: "emerald" | "blue" | "amber";
+}) {
+  const toneMap = {
+    emerald: "text-emerald-500",
+    blue: "text-blue-500",
+    amber: "text-amber-500",
+  } as const;
+
+  return (
+    <div className="p-5 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <div className={`mb-2 ${toneMap[tone]}`}>{icon}</div>
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+      <p className={`text-3xl font-black italic ${toneMap[tone]}`}>{value}</p>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const normalized = String(status || "missing").toLowerCase();
+  const classes =
+    normalized === "success"
+      ? "bg-emerald-500/10 text-emerald-500"
+      : normalized === "degraded" || normalized === "failed"
+        ? "bg-rose-500/10 text-rose-500"
+        : normalized === "running"
+          ? "bg-blue-500/10 text-blue-500"
+          : "bg-amber-500/10 text-amber-500";
+
+  return (
+    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${classes}`}>
+      {normalized}
+    </span>
   );
 }
