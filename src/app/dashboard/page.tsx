@@ -1,107 +1,462 @@
 "use client";
-export const dynamic = 'force-dynamic'; // CRITICAL FIX: Skips static build crash
-
 import { useState, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { supabase } from "@/lib/supabase";
 
-// --- IMPORTS (Adjust levels based on your folder depth) ---
-import SectionOverview from "../../components/dashboard/SectionOverview"; 
-import SectionScout from "../../components/dashboard/SectionScout";
-import SectionMissions from "../../components/dashboard/SectionMissions"; 
-import SectionLedger from "../../components/dashboard/SectionLedger";
-import SectionHeatmap from "../../components/dashboard/SectionHeatmap";
-import SectionHunt from "../../components/dashboard/SectionHunt";
-import { ListingModal } from "../../components/dashboard/ListingModal"; 
+import SectionOverview from "@/components/dashboard/SectionOverview"; 
+import SectionScout from "@/components/dashboard/SectionScout";
+import SectionMissions from "@/components/dashboard/SectionMissions"; 
+import SectionLedger from "@/components/dashboard/SectionLedger";
+import SectionHeatmap from "@/components/dashboard/SectionHeatmap";
+import SectionHunt from "@/components/dashboard/SectionHunt";
+import SectionHistory from "@/components/dashboard/SectionHistory"; 
+import SectionLedgerSidebar from "@/components/dashboard/SectionLedgerSidebar";
+import SubredditFilter from "@/components/dashboard/SubredditFilter";
+import { ListingModal } from "@/components/dashboard/ListingModal"; 
 
 import { 
   Radar, LayoutDashboard, Wallet, Activity, 
-  LogOut, Menu, Map, Info, Sparkles, LayoutGrid,
-  Sun, Moon, Monitor
+  LogOut, Map, LayoutGrid, Hash, Package, X, Briefcase, Sun, Moon, Monitor, CheckSquare, Info
 } from "lucide-react";
 import Link from "next/link";
+import type { CollectorJob, CompCheck } from "@/lib/types";
+
+const NULL_WARNING_THRESHOLD = 0.5;
+
+function logSchemaHealth(
+  tableName: string,
+  rows: Record<string, unknown>[] = [],
+  requiredFields: string[]
+) {
+  if (!rows.length) {
+    console.info(`[Schema Health] ${tableName}: no rows returned.`);
+    return;
+  }
+
+  for (const field of requiredFields) {
+    const nullishCount = rows.reduce((count, row) => {
+      const value = row[field];
+      return value === null || value === undefined ? count + 1 : count;
+    }, 0);
+
+    const nullRate = nullishCount / rows.length;
+    if (nullRate >= NULL_WARNING_THRESHOLD) {
+      console.warn(
+        `[Schema Health] ${tableName}.${field} is ${Math.round(
+          nullRate * 100
+        )}% null in sampled data (${nullishCount}/${rows.length}).`
+      );
+    }
+  }
+}
 
 export default function DashboardPage() {
   const { theme, setTheme } = useTheme();
+  
+  // --- HYDRATION FIX ---
   const [mounted, setMounted] = useState(false);
-  const [activeView, setActiveView] = useState("overview");
   
-  const [missions, setMissions] = useState<any[]>([]);
-  const [signals, setSignals] = useState<any[]>([]);
-  const [stores, setStores] = useState<any[]>([]);
-  
-  const [selectedItem, setSelectedItem] = useState<any>(null);
-  const [notification, setNotification] = useState<string | null>(null);
-  const [globalSearch, setGlobalSearch] = useState("");
-  const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
+  const [activeView, setActiveView] = useState("scout");
+  const [isDemoMode, setIsDemoMode] = useState(false); 
+  const [selectedItem, setSelectedItem] = useState<any>(null); 
+  const [selectedNode, setSelectedNode] = useState<any>(null); 
+  const [trunk, setTrunk] = useState<any[]>([]);
+
+  // --- REAL DATA STATE ---
+  const [realInventory, setRealInventory] = useState<any[]>([]);
+  const [realStores, setRealStores] = useState<any[]>([]);
+  const [realSignals, setRealSignals] = useState<any[]>([]); 
+  const [realCompChecks, setRealCompChecks] = useState<CompCheck[]>([]);
+  const [realCollectorJobs, setRealCollectorJobs] = useState<CollectorJob[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // --- MISSION HUB DATA ---
+  const [missionObjectives, setMissionObjectives] = useState([
+    {
+      id: 1,
+      title: "Vintage Levi's 501s",
+      guide: ["Check Red Tab (Big E?)", "Verify Selvedge ID", "Inspect Crotch Wear", "Check Button Fly Stamp"],
+      backups: ["Lee Riders", "Wrangler 13MWZ"]
+    },
+    {
+      id: 2,
+      title: "Carhartt Detroit J01",
+      guide: ["Check Neck Tag (Made in USA)", "Verify Union Stamp", "Inspect Cuff Fraying"],
+      backups: ["Dickies Eisenhower", "Ben Davis Work Coat"]
+    }
+  ]);
+
+  // Header Mapping
+  const viewLabels: Record<string, string> = {
+    overview: "Overview",
+    scout: "Research",
+    hunt: "Store Map",
+    missions: "Inventory",
+    ledger: "Financials",
+    analysis: "Trends",
+    sources: "Sources"
+  };
 
   useEffect(() => {
     setMounted(true);
-    const loadLiveContent = async () => {
-      const [inv, sig, str] = await Promise.all([
-        supabase.from('inventory').select('*').order('created_at', { ascending: false }),
-        supabase.from('market_signals').select('*, ai_description').order('heat_score', { ascending: false }),
-        supabase.from('stores').select('*').eq('zip_code', '30064').order('power_rank', { ascending: false })
-      ]);
-      setMissions(inv.data || []);
-      setSignals(sig.data || []);
-      setStores(str.data || []);
-    };
-    loadLiveContent();
+    fetchRealData();
   }, []);
+
+  // --- FETCH REAL SUPABASE DATA ---
+  async function fetchRealData() {
+    try {
+      // 1. Fetch Inventory
+      const { data: invData } = await supabase.from('inventory').select('*');
+      if (invData) setRealInventory(invData);
+
+      // 2. Fetch Stores
+      const { data: storeData } = await supabase.from('stores').select('*');
+      if (storeData) setRealStores(storeData);
+
+      // 3. Fetch Market Signals (Reddit Trends) - SORTED BY HEAT
+      const { data: signalData } = await supabase
+        .from('market_signals')
+        .select('*')
+        .order('heat_score', { ascending: false });
+        
+      if (signalData) {
+        setRealSignals(signalData);
+        logSchemaHealth("market_signals", signalData, [
+          "id",
+          "trend_name",
+          "heat_score",
+          "exit_price",
+        ]);
+      }
+
+      // 4. Fetch Comp Checks (optional table during rollout)
+      const { data: compData, error: compError } = await supabase
+        .from("comp_checks")
+        .select(
+          "id,signal_id,trend_name,sample_size,checked_at,price_low,price_high,notes,created_at,updated_at"
+        )
+        .order("checked_at", { ascending: false });
+      if (compError) {
+        console.warn("comp_checks unavailable or errored:", compError.message);
+      } else if (compData) {
+        setRealCompChecks(compData);
+        logSchemaHealth("comp_checks", compData, [
+          "signal_id",
+          "sample_size",
+          "checked_at",
+        ]);
+      }
+
+      // 5. Fetch Collector Jobs (optional table during rollout)
+      const { data: jobData, error: jobError } = await supabase
+        .from("collector_jobs")
+        .select(
+          "id,source_name,status,started_at,completed_at,error_message,created_at,updated_at"
+        )
+        .order("completed_at", { ascending: false });
+      if (jobError) {
+        console.warn("collector_jobs unavailable or errored:", jobError.message);
+      } else if (jobData) {
+        setRealCollectorJobs(jobData);
+        logSchemaHealth("collector_jobs", jobData, [
+          "source_name",
+          "status",
+          "completed_at",
+        ]);
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      console.error("Data Fetch Error:", error);
+    }
+  }
+
+  const addToTrunk = (node: any) => {
+    if (!trunk.find(item => item.id === node.id)) {
+      setTrunk([...trunk, node]);
+    }
+  };
+
+  const removeFromTrunk = (id: any) => setTrunk(trunk.filter(item => item.id !== id));
+  const clearTrunk = () => setTrunk([]);
+
+  // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
+  const confirmFoundItem = async (trunkItem: any, storeName: string) => {
+    const { error } = await supabase.from('inventory').insert([{
+      name: trunkItem.name,
+      status: 'washing', 
+      buy_price: trunkItem.entry_price, 
+      est_sell: trunkItem.entry_price * 2, 
+      notes: `Sourced from ${storeName}`
+    }]);
+
+    if (!error) {
+      alert(`✅ Secured: ${trunkItem.name} added to Inventory!`);
+      removeFromTrunk(trunkItem.id);
+      fetchRealData(); // Refresh to show in Inventory tab
+    } else {
+      alert("Error adding to inventory. Check console.");
+      console.error(error);
+    }
+  };
+
+  const removeObjective = (id: number) => setMissionObjectives(prev => prev.filter(o => o.id !== id));
+  const clearObjectives = () => setMissionObjectives([]);
 
   if (!mounted) return null;
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-500">
-      <aside className={`h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col justify-between p-6 ${isDesktopSidebarCollapsed ? 'w-24' : 'w-72'}`}>
-        <div>
-          <div className="flex items-center space-x-3 mb-10 pl-2">
+    <div className="flex h-screen w-full bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-slate-100 overflow-hidden font-sans transition-colors duration-500">
+      
+      {/* SIDEBAR NAVIGATION */}
+      <aside className="w-72 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col p-8">
+        <div className="flex items-center space-x-3 mb-10 pl-2">
             <div className="h-10 w-10 bg-emerald-500 rounded-xl flex items-center justify-center text-slate-900 font-black italic shadow-lg shrink-0 text-xl">T</div>
-            {!isDesktopSidebarCollapsed && <h1 className="text-xl font-black italic uppercase tracking-tighter">ThriftPulse</h1>}
-          </div>
-          <nav className="space-y-2">
-            <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed} color="emerald" />
-            <NavButton label="Research" id="scout" icon={Radar} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed} color="emerald" />
-            <NavButton label="Map" id="hunt" icon={Map} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed} color="blue" />
-            <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed} badge={missions.length} color="purple" />
-            <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={setActiveView} collapsed={isDesktopSidebarCollapsed} color="amber" />
-          </nav>
+            <h1 className="text-xl font-black italic uppercase tracking-tighter">ThriftPulse</h1>
         </div>
-        <Link href="/" className="flex items-center space-x-3 p-4 text-slate-500 hover:text-red-500 font-bold text-sm shrink-0">
-          <LogOut size={20} />
-          {!isDesktopSidebarCollapsed && <span>Exit Room</span>}
-        </Link>
+        
+        <button onClick={() => setIsDemoMode(!isDemoMode)} className={`w-full flex items-center justify-between p-4 mb-8 rounded-2xl border transition-all ${isDemoMode ? 'bg-amber-500/10 border-amber-500 text-amber-600' : 'bg-emerald-500/10 border-emerald-500 text-emerald-600'}`}>
+            <span className="text-[10px] font-black uppercase tracking-widest">{isDemoMode ? "DEMO ACTIVE" : "LIVE DATA"}</span>
+            <div className={`h-4 w-8 rounded-full relative ${isDemoMode ? 'bg-amber-500' : 'bg-emerald-500'}`}>
+                <div className={`absolute top-1 h-2 w-2 bg-white rounded-full transition-all ${isDemoMode ? 'left-1' : 'left-5'}`} />
+            </div>
+        </button>
+
+        <nav className="space-y-1.5 flex-1">
+          <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={setActiveView} color="emerald" />
+          <NavButton label="Research" id="scout" icon={Radar} active={activeView} set={setActiveView} color="emerald" />
+          <NavButton label="Store Map" id="hunt" icon={Map} active={activeView} set={setActiveView} color="blue" />
+          <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={setActiveView} color="purple" />
+          <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={setActiveView} color="amber" />
+          <NavButton label="Trends" id="analysis" icon={Activity} active={activeView} set={setActiveView} color="rose" />
+          <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={setActiveView} color="emerald" />
+        </nav>
+
+        <div className="pt-8 mt-auto border-t dark:border-slate-800 space-y-4">
+           <div className="flex items-center justify-center p-2 bg-slate-100 dark:bg-slate-800 rounded-2xl space-x-2 border dark:border-slate-700">
+              <ThemeIcon icon={Sun} active={theme === 'light'} onClick={() => setTheme('light')} />
+              <ThemeIcon icon={Moon} active={theme === 'dark'} onClick={() => setTheme('dark')} />
+              <ThemeIcon icon={Monitor} active={theme === 'system'} onClick={() => setTheme('system')} />
+           </div>
+           <Link href="/" className="flex items-center space-x-3 p-4 text-slate-500 hover:text-red-500 font-bold text-sm transition-all"><LogOut size={20} /><span>Exit Hub</span></Link>
+        </div>
       </aside>
 
-      <main className="flex-1 h-full overflow-y-auto p-12 max-w-[1600px] mx-auto scroll-smooth">
-        <div className="animate-in fade-in duration-700">
-          {activeView === "overview" && <SectionOverview missions={missions} signals={signals} stores={stores} onNavigate={setActiveView} onTaskExecute={() => {}} />}
-          {activeView === "scout" && <SectionScout searchTerm={globalSearch} onAddMission={() => {}} onViewAI={(item) => setSelectedItem(item)} />}
-          {activeView === "hunt" && <SectionHunt location="30064" signals={signals} />} 
-          {activeView === "missions" && <SectionMissions activeMissions={missions} onAddMission={() => {}} />}
-          {activeView === "ledger" && <SectionLedger missions={missions} />}
+      {/* MAIN CONTENT */}
+      <main className="flex-1 h-full overflow-y-auto p-16 relative">
+        <header className="mb-12 text-left">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500 mb-2 italic">Sector: 30064 // {activeView.toUpperCase()}</h2>
+          <h3 className="text-5xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white">
+             {viewLabels[activeView]}
+          </h3>
+        </header>
+
+        <div className="animate-in fade-in duration-500">
+          {activeView === "overview" && (
+            <SectionOverview
+              missions={realInventory}
+              signals={realSignals}
+              stores={realStores}
+              collectorJobs={realCollectorJobs}
+              onNavigate={setActiveView}
+            />
+          )}
+          
+          {/* RESEARCH: Now receives real Reddit Trends */}
+          {activeView === "scout" && (
+            <SectionScout
+              signals={realSignals}
+              compChecks={realCompChecks}
+              collectorJobs={realCollectorJobs}
+              onAdd={addToTrunk}
+              onNodeSelect={setSelectedNode}
+            />
+          )}
+          
+          {/* STORE MAP: Now receives real Trunk data and real Stores */}
+          {activeView === "hunt" && (
+            <SectionHunt 
+              location="30064" 
+              stores={realStores} 
+              trunk={trunk} 
+              onConfirmFound={confirmFoundItem} 
+            />
+          )}
+          
+          {/* INVENTORY: Now receives real Inventory */}
+          {activeView === "missions" && (
+            <div className="space-y-16">
+              <SectionMissions activeMissions={realInventory} onAddMission={() => fetchRealData()} />
+              <SectionHistory currency="USD" />
+            </div>
+          )}
+
+          {activeView === "ledger" && <SectionLedger missions={realInventory} />}
+          
+          {/* HEATMAP: Now receives real Reddit Trends */}
+          {activeView === "analysis" && (
+            <SectionHeatmap
+              signals={realSignals}
+              compChecks={realCompChecks}
+              onTrendClick={() => setActiveView("scout")}
+            />
+          )}
+          
+          {activeView === "sources" && <SubredditFilter />}
         </div>
 
-        <ListingModal 
-          item={selectedItem} 
-          isOpen={!!selectedItem} 
-          onClose={() => setSelectedItem(null)} 
-        />
+        {/* --- RESEARCH SIDE WINDOW (Pop-Up) --- */}
+        {selectedNode && (
+          <>
+          <div
+            className="fixed inset-0 bg-slate-950/45 backdrop-blur-[1px] z-40"
+            onClick={() => setSelectedNode(null)}
+          />
+          <div className="fixed inset-y-0 right-0 w-[500px] bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 shadow-2xl p-10 animate-in slide-in-from-right duration-300 z-50 overflow-y-auto">
+            <button onClick={() => setSelectedNode(null)} className="mb-8 flex items-center text-xs font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors">
+              <X size={16} className="mr-2" /> Close Panel
+            </button>
+            
+            <div className="mb-8">
+              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${selectedNode.type === 'brand' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                {selectedNode.type === 'brand' ? 'Brand Node' : 'Style Trend'}
+              </span>
+              <h2 className="text-4xl font-black italic uppercase tracking-tighter mt-4 leading-tight">{selectedNode.name}</h2>
+              {selectedNode.brandRef && <p className="text-lg font-bold text-slate-400 italic">via {selectedNode.brandRef}</p>}
+            </div>
+
+            <div className="space-y-8">
+              <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Sourcing Intelligence</h4>
+                <p className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">"{selectedNode.intel}"</p>
+              </div>
+
+              {Array.isArray(selectedNode.what_to_buy) && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center">
+                    <CheckSquare size={14} className="mr-2" /> Full Shopping List ({selectedNode.what_to_buy.length})
+                  </h4>
+                  <ul className="space-y-3">
+                    {selectedNode.what_to_buy.map((item: string, i: number) => (
+                      <li key={i} className="flex items-center text-sm font-bold text-slate-700 dark:text-slate-200">
+                        <div className="h-2 w-2 rounded-full bg-blue-500 mr-3" /> {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="pt-8 border-t dark:border-slate-800 space-y-4">
+                <div className="flex justify-between items-center mb-4">
+                  <span className="text-xs font-black uppercase tracking-widest text-slate-400">Target Entry</span>
+                  <span className="text-3xl font-black text-slate-900 dark:text-white">${selectedNode.entry_price}</span>
+                </div>
+                <button 
+                  onClick={() => { addToTrunk(selectedNode); setSelectedNode(null); }}
+                  className="w-full py-5 bg-emerald-500 text-white rounded-2xl font-black uppercase italic text-sm tracking-widest hover:bg-emerald-600 transition-all shadow-xl"
+                >
+                  Add to Sourcing Trunk
+                </button>
+              </div>
+            </div>
+          </div>
+          </>
+        )}
       </main>
+
+      {/* RIGHT SIDEBAR */}
+      <aside className="w-96 h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative">
+        {activeView === 'missions' ? (
+          <SectionLedgerSidebar 
+             objectives={missionObjectives} 
+             onRemove={removeObjective}
+             onClear={clearObjectives}
+             onClose={() => setActiveView("overview")} 
+          />
+        ) : (
+          <div className="flex flex-col h-full p-8">
+            <div className="flex items-center justify-between mb-8">
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
+                <Briefcase size={14} /> Sourcing Trunk
+              </h3>
+              {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear All</button>}
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4">
+              {trunk.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center opacity-30 text-slate-400">
+                  <Package size={48} className="mb-4" />
+                  <p className="text-[10px] font-black uppercase tracking-widest">Trunk Empty</p>
+                </div>
+              ) : (
+                trunk.map((item) => (
+                  <div key={item.id} className="p-6 bg-white dark:bg-slate-900 rounded-[2rem] border dark:border-slate-800 shadow-sm relative group animate-in slide-in-from-right">
+                    <button onClick={() => removeFromTrunk(item.id)} className="absolute top-5 right-5 text-slate-300 hover:text-red-500 transition-colors"><X size={14} /></button>
+                    
+                    <h4 className="text-xl font-black italic uppercase tracking-tighter dark:text-white leading-none mb-3 pr-6">{item.name}</h4>
+                    
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${item.type === 'brand' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                        {item.type === 'brand' ? 'Brand' : 'Trend'}
+                      </span>
+                      <span className="text-sm font-black text-slate-900 dark:text-white">Target: ${item.entry_price}</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="bg-slate-50 dark:bg-white/5 p-3 rounded-2xl border border-slate-100 dark:border-slate-800">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center">
+                          <Info size={10} className="mr-1" /> Sourcing Intel
+                        </p>
+                        <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 italic leading-relaxed">
+                          "{item.intel}"
+                        </p>
+                      </div>
+
+                      {item.what_to_buy && item.what_to_buy.length > 0 && (
+                        <div className="bg-blue-50/50 dark:bg-blue-500/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-500/20">
+                          <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest mb-2 flex items-center">
+                            <CheckSquare size={10} className="mr-1" /> Checklist:
+                          </p>
+                          <ul className="space-y-1.5">
+                            {item.what_to_buy.map((tip: string, i: number) => (
+                              <li key={i} className="flex items-start text-[10px] font-bold text-slate-700 dark:text-slate-300 italic">
+                                <span className="h-1 w-1 rounded-full bg-blue-500 mt-1.5 mr-2 shrink-0" /> {tip}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {trunk.length > 0 && (
+              <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Generate Route ({trunk.length})</button>
+            )}
+          </div>
+        )}
+      </aside>
+
+      <ListingModal item={selectedItem} isOpen={!!selectedItem} onClose={() => setSelectedItem(null)} />
     </div>
   );
 }
 
-// NavButton and ThemeIcon helpers...
-function NavButton({ label, id, icon: Icon, active, set, collapsed, badge, color }: any) {
+function NavButton({ label, id, icon: Icon, active, set, color }: any) {
   const isActive = active === id;
   const colorMap: any = { emerald: "text-emerald-500", blue: "text-blue-500", purple: "text-purple-500", amber: "text-amber-500", rose: "text-rose-500" };
   return (
-    <button onClick={() => set(id)} className={`w-full flex items-center p-4 rounded-2xl transition-all duration-300 group relative ${isActive ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-xl' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
-      <Icon size={24} className={isActive ? "" : colorMap[color]} />
-      {!collapsed && <span className="ml-4 text-sm font-black uppercase tracking-tight">{label}</span>}
-      {badge > 0 && <div className="absolute right-4 bg-red-500 text-white text-[10px] font-black h-5 w-5 rounded-full flex items-center justify-center">{badge}</div>}
+    <button onClick={() => set(id)} className={`w-full flex items-center p-4 rounded-2xl transition-all ${isActive ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-xl' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+      <Icon size={20} className={isActive ? "" : colorMap[color]} />
+      <span className="ml-4 text-xs font-black uppercase tracking-tight">{label}</span>
     </button>
+  );
+}
+
+function ThemeIcon({ icon: Icon, active, onClick }: any) {
+  return (
+    <button onClick={onClick} className={`p-2.5 rounded-xl transition-all ${active ? 'bg-white dark:bg-slate-700 text-emerald-500 shadow-md border dark:border-slate-600' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'}`}><Icon size={18} /></button>
   );
 }

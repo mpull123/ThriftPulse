@@ -127,6 +127,71 @@ function compactWhitespace(text) {
   return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
+function extractJsonObject(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const withoutFences = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const start = withoutFences.indexOf('{');
+  const end = withoutFences.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  return withoutFences.slice(start, end + 1);
+}
+
+function parseOpenAIJsonResponse(bodyText) {
+  const parsed = JSON.parse(bodyText || '{}');
+  const content = parsed?.choices?.[0]?.message?.content || '';
+  const jsonBlock = extractJsonObject(content);
+  if (!jsonBlock) return {};
+  return JSON.parse(jsonBlock);
+}
+
+async function callOpenAIJsonCompletion({ systemPrompt, userPrompt, temperature = 0, retries = 2 }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('openai_key_missing');
+
+  const model = process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          temperature,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
+
+      const bodyText = await res.text();
+      if (!res.ok) {
+        const snippet = bodyText.slice(0, 160).replace(/\s+/g, ' ');
+        throw new Error(`status=${res.status} body="${snippet}"`);
+      }
+
+      return parseOpenAIJsonResponse(bodyText);
+    } catch (err) {
+      lastError = err;
+      if (attempt > retries) break;
+    }
+  }
+
+  throw lastError || new Error('openai_json_call_failed');
+}
+
 function extractTermsFromTrendTitle(title) {
   const cleaned = decodeXmlEntities(String(title || '')).trim();
   if (!cleaned) return [];
@@ -151,6 +216,43 @@ function isFashionTerm(term) {
   return keywords.some((kw) => t.includes(kw));
 }
 
+function isSpecificFashionTerm(term) {
+  const t = String(term || '').toLowerCase();
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return false;
+
+  const apparelNouns = [
+    'jacket', 'coat', 'hoodie', 'sweatshirt', 'sweater', 'cardigan', 'tee',
+    't-shirt', 'shirt', 'pants', 'jeans', 'trousers', 'skirt', 'dress',
+    'boots', 'sneakers', 'loafer', 'bag', 'vest', 'parka', 'anorak'
+  ];
+  const hasApparelNoun = apparelNouns.some((n) => t.includes(n));
+  if (!hasApparelNoun) return false;
+
+  const brandSignals = [
+    'carhartt', 'arc', 'arcteryx', 'nike', 'adidas', 'salomon', 'new balance',
+    'patagonia', 'north face', 'stussy', 'supreme', 'levis', 'levi'
+  ];
+  const materialSignals = [
+    'gore-tex', 'leather', 'suede', 'wool', 'cashmere', 'mohair', 'denim',
+    'selvedge', 'ripstop', 'fleece', 'corduroy', 'nylon', 'canvas'
+  ];
+  const styleSignals = [
+    'double knee', 'carpenter', 'workwear', 'utility', 'vintage', '90s', 'y2k',
+    'cargo', 'distressed', 'wide-leg', 'high-waisted', 'graphic', 'oversized',
+    'boxy', 'tabi', 'chelsea'
+  ];
+
+  let specificity = 0;
+  if (brandSignals.some((s) => t.includes(s))) specificity += 2;
+  if (materialSignals.some((s) => t.includes(s))) specificity += 2;
+  if (styleSignals.some((s) => t.includes(s))) specificity += 1;
+  if (words.length >= 3) specificity += 1;
+  if (/\d/.test(t) || /-/.test(t)) specificity += 1;
+
+  return specificity >= 2;
+}
+
 function isBlockedNonFashionTerm(term) {
   const t = String(term || '').toLowerCase();
   const blocked = [
@@ -166,7 +268,8 @@ function shouldUseTrendTerm(term) {
   if (!cleaned) return false;
   if (cleaned.length < 4 || cleaned.length > 60) return false;
   if (isBlockedNonFashionTerm(cleaned)) return false;
-  return isFashionTerm(cleaned);
+  if (!isFashionTerm(cleaned)) return false;
+  return isSpecificFashionTerm(cleaned);
 }
 
 function normalizeTrendTerm(term) {
@@ -196,6 +299,39 @@ function normalizeTrendTerm(term) {
     .replace(/\bWith\b/g, 'with');
 
   return compactWhitespace(t);
+}
+
+function inferBrandFromTerm(term) {
+  const t = String(term || '').toLowerCase();
+  const brandMatchers = [
+    { label: "Arc'teryx", patterns: [/\barc['’]?teryx\b/, /\barcteryx\b/] },
+    { label: 'Carhartt', patterns: [/\bcarhartt\b/] },
+    { label: 'Salomon', patterns: [/\bsalomon\b/] },
+    { label: 'Nike', patterns: [/\bnike\b/] },
+    { label: 'Adidas', patterns: [/\badidas\b/] },
+    { label: 'New Balance', patterns: [/\bnew\s+balance\b/] },
+    { label: 'Patagonia', patterns: [/\bpatagonia\b/] },
+    { label: 'The North Face', patterns: [/\bnorth\s+face\b/] },
+    { label: "Levi's", patterns: [/\blevi['’]?s?\b/] },
+    { label: 'Stussy', patterns: [/\bstussy\b/] },
+    { label: 'Supreme', patterns: [/\bsupreme\b/] }
+  ];
+
+  for (const matcher of brandMatchers) {
+    if (matcher.patterns.some((pattern) => pattern.test(t))) return matcher.label;
+  }
+  return null;
+}
+
+function inferTrack(term, brandName) {
+  if (brandName) return 'Brand';
+  const t = String(term || '').toLowerCase();
+  const styleHints = [
+    'vintage', 'y2k', '90s', 'workwear', 'utility', 'double knee',
+    'wide-leg', 'high-waisted', 'graphic', 'oversized', 'cargo', 'distressed'
+  ];
+  if (styleHints.some((hint) => t.includes(hint))) return 'Style Category';
+  return 'Style Category';
 }
 
 function getDedupeKey(term) {
@@ -302,35 +438,16 @@ async function classifyFashionTermsWithAI(rawTerms) {
     'You are a fashion resale trend classifier. Return only strict JSON with keys: selected_terms (string[]), dropped_terms (string[]). Select terms relevant to clothing, footwear, accessories, styling, thrifting, vintage, or resale fashion.';
   const userPrompt = `Classify these Google trend terms for fashion relevance:\n${JSON.stringify(inputTerms)}`;
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini',
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    })
-  });
-
-  const bodyText = await res.text();
-  if (!res.ok) {
-    const snippet = bodyText.slice(0, 140).replace(/\s+/g, ' ');
-    throw new Error(`ai_classify_failed status=${res.status} body="${snippet}"`);
-  }
-
   let payload = null;
   try {
-    const parsed = JSON.parse(bodyText);
-    payload = JSON.parse(parsed?.choices?.[0]?.message?.content || '{}');
+    payload = await callOpenAIJsonCompletion({
+      systemPrompt,
+      userPrompt,
+      temperature: 0,
+      retries: 2
+    });
   } catch (err) {
-    throw new Error(`ai_classify_parse_failed ${err.message}`);
+    throw new Error(`ai_classify_failed ${err.message}`);
   }
 
   const selected = Array.isArray(payload?.selected_terms)
@@ -385,42 +502,34 @@ async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTe
     'You are a fashion trend researcher for resale markets. Return JSON only with key "candidates" as an array of concise fashion keyword phrases. Include garments, styles, aesthetics, materials, and brand-item combinations relevant to resale.';
   const userPrompt = `Generate up to ${maxCandidates} fashion trend candidates.\nCurrent trend seeds:\n${JSON.stringify(seedTerms)}\n\nFashion headlines corpus:\n${JSON.stringify(headlineSample)}\n\nOutput JSON: {"candidates":["..."]}`;
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini',
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    })
-  });
-
-  const bodyText = await res.text();
-  if (!res.ok) {
-    const snippet = bodyText.slice(0, 140).replace(/\s+/g, ' ');
-    throw new Error(`ai_candidate_gen_failed status=${res.status} body="${snippet}"`);
-  }
-
   let payload = null;
   try {
-    const parsed = JSON.parse(bodyText);
-    payload = JSON.parse(parsed?.choices?.[0]?.message?.content || '{}');
+    payload = await callOpenAIJsonCompletion({
+      systemPrompt,
+      userPrompt,
+      temperature: 0.2,
+      retries: 2
+    });
   } catch (err) {
-    throw new Error(`ai_candidate_gen_parse_failed ${err.message}`);
+    throw new Error(`ai_candidate_gen_failed ${err.message}`);
   }
 
-  const candidates = Array.isArray(payload?.candidates)
+  const rawCandidates = Array.isArray(payload?.candidates)
     ? payload.candidates.map((t) => compactWhitespace(t)).filter(Boolean)
     : [];
 
-  return [...new Set(candidates)].filter(shouldUseTrendTerm).slice(0, maxCandidates);
+  const candidates = [...new Set(rawCandidates)].filter(shouldUseTrendTerm);
+  const minAccepted = Math.max(12, Number(process.env.MIN_AI_ACCEPTED_CANDIDATES || 24));
+  const minAcceptanceRate = Math.max(0.1, Math.min(1, Number(process.env.MIN_AI_ACCEPTANCE_RATE || 0.2)));
+  const acceptanceRate = rawCandidates.length ? candidates.length / rawCandidates.length : 0;
+
+  if (candidates.length < minAccepted || acceptanceRate < minAcceptanceRate) {
+    throw new Error(
+      `ai_candidate_gen_quality_failed accepted=${candidates.length} raw=${rawCandidates.length} rate=${acceptanceRate.toFixed(2)}`
+    );
+  }
+
+  return candidates.slice(0, maxCandidates);
 }
 
 async function fetchGoogleTrendsTerms() {
@@ -560,6 +669,9 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
         .upsert(
           [{
             trend_name: term,
+            track: inferTrack(term, inferBrandFromTerm(term)),
+            hook_brand: inferBrandFromTerm(term),
+            market_sentiment: 'AI + eBay validated trend candidate.',
             heat_score: heatScore,
             exit_price: Math.max(10, avgPrice),
             updated_at: new Date().toISOString()
@@ -726,6 +838,8 @@ async function syncMarketPulse() {
       const { error: upError } = await supabase
         .from('market_signals')
         .update({ 
+          track: inferTrack(signal.trend_name, inferBrandFromTerm(signal.trend_name)),
+          hook_brand: signal.hook_brand || inferBrandFromTerm(signal.trend_name),
           exit_price: avgPrice, 
           heat_score: newHeat,
           updated_at: new Date() 
