@@ -31,7 +31,14 @@ const FASHION_CORPUS_SOURCES = [
   'https://www.gq.com/feed/rss',
   'https://www.vogue.com/feed/rss',
   'https://www.whowhatwear.com/rss',
-  'https://www.thecut.com/rss'
+  'https://www.thecut.com/rss',
+  'https://www.complex.com/style/rss',
+  'https://www.refinery29.com/en-us/fashion/rss.xml',
+  'https://www.instyle.com/feed',
+  'https://www.harpersbazaar.com/rss/all.xml',
+  'https://www.elle.com/rss/all.xml',
+  'https://www.glamour.com/feed/rss',
+  'https://www.depop.com/blog/feed/'
 ];
 
 function getTargetSubreddits() {
@@ -348,6 +355,69 @@ function shouldUseTrendTerm(term) {
   return isFashionTerm(cleaned);
 }
 
+function normalizeTrendTerm(term) {
+  let t = compactWhitespace(term);
+  if (!t) return '';
+
+  // Strip AI filler prefixes that don't add resale meaning.
+  t = t.replace(/^(chic|luxe|elevated|trendy|stylish)\s+/i, '');
+
+  // Normalize common apparel variants.
+  t = t
+    .replace(/\btee shirt\b/gi, 't-shirt')
+    .replace(/\bt shirt\b/gi, 't-shirt')
+    .replace(/\bgraphic tee\b/gi, 'graphic t-shirt')
+    .replace(/\bhigh waisted\b/gi, 'high-waisted');
+
+  // Normalize repeated "vintage 90s" style prefixes.
+  t = t.replace(/^vintage\s+90s\s+/i, 'Vintage 90s ');
+
+  // Title-case for cleaner display.
+  t = t
+    .split(' ')
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w))
+    .join(' ')
+    .replace(/\bAnd\b/g, 'and')
+    .replace(/\bOf\b/g, 'of')
+    .replace(/\bWith\b/g, 'with');
+
+  return compactWhitespace(t);
+}
+
+function getDedupeKey(term) {
+  return normalizeTrendTerm(term)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getPrefixBucket(term) {
+  const normalized = normalizeTrendTerm(term).toLowerCase();
+  if (normalized.startsWith('vintage 90s')) return 'vintage-90s';
+  if (normalized.startsWith('vintage')) return 'vintage';
+  if (normalized.includes('jacket')) return 'jacket';
+  if (normalized.includes('boots') || normalized.includes('boot')) return 'boots';
+  if (normalized.includes('cardigan')) return 'cardigan';
+  if (normalized.includes('denim') || normalized.includes('jean')) return 'denim';
+  return normalized.split(' ').slice(0, 2).join('-');
+}
+
+function applyDiversityCaps(terms, capPerBucket = 6) {
+  const counts = new Map();
+  const kept = [];
+
+  for (const term of terms) {
+    const bucket = getPrefixBucket(term);
+    const current = counts.get(bucket) || 0;
+    if (current >= capPerBucket) continue;
+    counts.set(bucket, current + 1);
+    kept.push(term);
+  }
+
+  return kept;
+}
+
 async function classifyFashionTermsWithAI(rawTerms) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !Array.isArray(rawTerms) || rawTerms.length === 0) return null;
@@ -576,9 +646,19 @@ async function getActiveQueryPacks() {
 
 function mergeDiscoveredTerms(activeQueryPacks, googleTrendsTerms) {
   const merged = [...activeQueryPacks, ...googleTrendsTerms]
-    .map((v) => String(v || '').trim())
+    .map((v) => normalizeTrendTerm(String(v || '').trim()))
     .filter(shouldUseTrendTerm);
-  return [...new Set(merged)];
+
+  const deduped = [];
+  const seen = new Set();
+  for (const term of merged) {
+    const key = getDedupeKey(term);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(term);
+  }
+
+  return applyDiversityCaps(deduped, Number(process.env.TERM_BUCKET_CAP || 6));
 }
 
 async function seedSignalsFromSources(existingSignals, discoveredTerms) {
