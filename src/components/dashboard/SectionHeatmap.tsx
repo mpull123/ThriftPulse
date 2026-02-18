@@ -73,10 +73,12 @@ function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
 
 export default function SectionHeatmap({
   onTrendClick,
+  onAddTrend,
   signals = [],
   compChecks = [],
 }: {
   onTrendClick: (trendName: string) => void;
+  onAddTrend?: (node: any) => void;
   signals?: any[];
   compChecks?: CompCheck[];
 }) {
@@ -84,6 +86,8 @@ export default function SectionHeatmap({
   const [loading, setLoading] = useState(signals.length === 0);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "signal">("signal");
+  const [freshOnly, setFreshOnly] = useState(false);
+  const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
 
   // If props are passed (from parent fetch), use them
   useEffect(() => {
@@ -121,9 +125,12 @@ export default function SectionHeatmap({
     };
   });
 
-  const filteredData = verifiedOnly
-    ? enrichedData.filter((item) => item.confidence === "high" || item.confidence === "med")
-    : enrichedData;
+  const filteredData = enrichedData.filter((item) => {
+    if (verifiedOnly && !(item.confidence === "high" || item.confidence === "med")) return false;
+    if (freshOnly && item.compStatus !== "fresh") return false;
+    if (lowBuyInOnly && Number(item.exit_price || 0) > 90) return false;
+    return true;
+  });
 
   const visibleData = [...filteredData].sort((a, b) => {
     if (sortMode === "mentions") return (b.mentions || 0) - (a.mentions || 0);
@@ -185,6 +192,18 @@ export default function SectionHeatmap({
           >
             {verifiedOnly ? "Verified: On" : "Verified: Off"}
           </button>
+          <button
+            onClick={() => setFreshOnly(!freshOnly)}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${freshOnly ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
+          >
+            Fresh Comps
+          </button>
+          <button
+            onClick={() => setLowBuyInOnly(!lowBuyInOnly)}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${lowBuyInOnly ? "bg-blue-500/10 text-blue-500 border-blue-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
+          >
+            Low Buy-In
+          </button>
         </div>
       </div>
 
@@ -206,8 +225,26 @@ export default function SectionHeatmap({
       {/* HEATMAP GRID */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
         {visibleData.map((item) => (
-          <div key={item.trend_name} onClick={() => onTrendClick(item.trend_name)} className="cursor-pointer">
-             <HeatmapTile item={item} />
+          <div key={item.trend_name}>
+             <HeatmapTile
+               item={item}
+               onOpenResearch={() => onTrendClick(item.trend_name)}
+               onAddTrend={() =>
+                 onAddTrend?.({
+                   id: `trend-${item.id || item.trend_name}`,
+                   type: "style",
+                   name: item.trend_name,
+                   entry_price: Number(item.exit_price || 0),
+                   heat: Number(item.heat_score || 0),
+                   intel:
+                     String(item.market_sentiment || "").trim() ||
+                     "Trend surfaced via live market pipeline.",
+                   what_to_buy: Array.isArray(item.visual_cues) && item.visual_cues.length
+                     ? item.visual_cues
+                     : [String(item.trend_name || "").trim()].filter(Boolean),
+                 })
+               }
+             />
           </div>
         ))}
       </div>
@@ -215,7 +252,15 @@ export default function SectionHeatmap({
   );
 }
 
-function HeatmapTile({ item }: { item: any }) {
+function HeatmapTile({
+  item,
+  onOpenResearch,
+  onAddTrend,
+}: {
+  item: any;
+  onOpenResearch: () => void;
+  onAddTrend: () => void;
+}) {
   const intensity = (item.heat_score || 0) / 100;
   const isHot = (item.heat_score || 0) >= 90;
 
@@ -245,6 +290,11 @@ function HeatmapTile({ item }: { item: any }) {
           {item.trend_name}
         </h4>
         <ConfidenceBadge confidence={item.confidence} />
+        <div className="mb-1 flex flex-wrap gap-1">
+          <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase text-slate-600 dark:text-slate-300">eBay {item.ebay_sample_count || 0}</span>
+          <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase text-slate-600 dark:text-slate-300">Google {item.google_trend_hits || 0}</span>
+          <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase text-slate-600 dark:text-slate-300">AI {item.ai_corpus_hits || 0}</span>
+        </div>
         <div className="flex items-center space-x-1">
           <TrendingUp size={10} className={isHot ? 'text-emerald-500' : 'text-slate-600'} />
           <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">Mentions: {item.mentions || 0}</span>
@@ -253,6 +303,26 @@ function HeatmapTile({ item }: { item: any }) {
           <span className="inline-flex px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200">
             Signal {item.signalScore || 0}
           </span>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-1">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddTrend();
+            }}
+            className="rounded-md bg-emerald-500/10 text-emerald-600 text-[8px] font-black uppercase py-1"
+          >
+            Add
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenResearch();
+            }}
+            className="rounded-md bg-blue-500/10 text-blue-500 text-[8px] font-black uppercase py-1"
+          >
+            Research
+          </button>
         </div>
       </div>
     </div>

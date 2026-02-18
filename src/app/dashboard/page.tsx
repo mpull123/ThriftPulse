@@ -23,6 +23,51 @@ import type { CollectorJob, CompCheck } from "@/lib/types";
 
 const NULL_WARNING_THRESHOLD = 0.5;
 
+function splitIntelToBullets(intel: string): string[] {
+  return String(intel || "")
+    .split(/[.?!]\s+/)
+    .map((part) => part.trim().replace(/[.?!]$/, ""))
+    .filter(Boolean);
+}
+
+function normalizeLabel(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function buildNodeSuggestions(node: any): string[] {
+  const nodeName = String(node?.name || "").trim();
+  const lowerName = nodeName.toLowerCase();
+  const rawList = Array.isArray(node?.what_to_buy) ? node.what_to_buy : [];
+
+  const mapped = rawList
+    .map((item: string) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item: string) => {
+      if (normalizeLabel(item) !== normalizeLabel(nodeName)) return item;
+
+      if (lowerName.includes("cardigan")) {
+        return "Look for cardigan variants: chunky knit, cable knit, and wool-blend versions with strong condition.";
+      }
+      if (lowerName.includes("jacket")) {
+        return "Look for jacket variants: cropped cuts, heavyweight fabric, and clean hardware with low wear.";
+      }
+      if (lowerName.includes("jean") || lowerName.includes("denim")) {
+        return "Look for denim variants: high-rise, straight-leg, and faded-wash pairs with minimal damage.";
+      }
+      if (lowerName.includes("boot") || lowerName.includes("sneaker")) {
+        return "Look for footwear variants: premium materials, clean soles, and high-demand colorways.";
+      }
+      return `Look for variations of ${nodeName}: stronger materials, cleaner condition, and distinctive silhouettes.`;
+    });
+
+  if (mapped.length > 0) return mapped;
+  if (!nodeName) return [];
+  return [`Look for variations of ${nodeName}: prioritize quality construction and clean condition.`];
+}
+
 function logSchemaHealth(
   tableName: string,
   rows: Record<string, unknown>[] = [],
@@ -298,6 +343,7 @@ export default function DashboardPage() {
             <SectionHeatmap
               signals={realSignals}
               compChecks={realCompChecks}
+              onAddTrend={addToTrunk}
               onTrendClick={() => setActiveView("scout")}
             />
           )}
@@ -305,16 +351,17 @@ export default function DashboardPage() {
           {activeView === "sources" && <SubredditFilter />}
         </div>
 
-        {/* --- RESEARCH SIDE WINDOW (Pop-Up) --- */}
+        {/* --- RESEARCH NODE POP-UP MODAL --- */}
         {selectedNode && (
           <>
           <div
             className="fixed inset-0 bg-slate-950/45 backdrop-blur-[1px] z-40"
             onClick={() => setSelectedNode(null)}
           />
-          <div className="fixed inset-y-0 right-0 w-[500px] bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 shadow-2xl p-10 animate-in slide-in-from-right duration-300 z-50 overflow-y-auto">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl max-h-[88vh] bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-3xl p-8 overflow-y-auto animate-in zoom-in-95 duration-200">
             <button onClick={() => setSelectedNode(null)} className="mb-8 flex items-center text-xs font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors">
-              <X size={16} className="mr-2" /> Close Panel
+              <X size={16} className="mr-2" /> Close
             </button>
             
             <div className="mb-8">
@@ -328,18 +375,25 @@ export default function DashboardPage() {
             <div className="space-y-8">
               <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Sourcing Intelligence</h4>
-                <p className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">"{selectedNode.intel}"</p>
+                <ul className="list-disc pl-5 space-y-2">
+                  {splitIntelToBullets(selectedNode.intel).map((line, i) => (
+                    <li key={i} className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
               </div>
 
-              {Array.isArray(selectedNode.what_to_buy) && (
+              {buildNodeSuggestions(selectedNode).length > 0 && (
                 <div>
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center">
-                    <CheckSquare size={14} className="mr-2" /> Full Shopping List ({selectedNode.what_to_buy.length})
+                    <CheckSquare size={14} className="mr-2" /> Full Shopping List ({buildNodeSuggestions(selectedNode).length})
                   </h4>
                   <ul className="space-y-3">
-                    {selectedNode.what_to_buy.map((item: string, i: number) => (
-                      <li key={i} className="flex items-center text-sm font-bold text-slate-700 dark:text-slate-200">
-                        <div className="h-2 w-2 rounded-full bg-blue-500 mr-3" /> {item}
+                    {buildNodeSuggestions(selectedNode).map((item: string, i: number) => (
+                      <li key={i} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                        <span className="mr-2 leading-5 text-blue-500">•</span>
+                        <span>{item}</span>
                       </li>
                     ))}
                   </ul>
@@ -355,10 +409,11 @@ export default function DashboardPage() {
                   onClick={() => { addToTrunk(selectedNode); setSelectedNode(null); }}
                   className="w-full py-5 bg-emerald-500 text-white rounded-2xl font-black uppercase italic text-sm tracking-widest hover:bg-emerald-600 transition-all shadow-xl"
                 >
-                  Add to Sourcing Trunk
+                  Add to Sourcing Trunk (Right Panel)
                 </button>
               </div>
             </div>
+          </div>
           </div>
           </>
         )}
@@ -377,7 +432,7 @@ export default function DashboardPage() {
           <div className="flex flex-col h-full p-8">
             <div className="flex items-center justify-between mb-8">
               <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
-                <Briefcase size={14} /> Sourcing Trunk
+                <Briefcase size={14} /> Sourcing Trunk (Confirmation Panel)
               </h3>
               {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear All</button>}
             </div>
