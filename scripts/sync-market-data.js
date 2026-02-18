@@ -418,6 +418,67 @@ function applyDiversityCaps(terms, capPerBucket = 6) {
   return kept;
 }
 
+function titleToDiscoveryCandidate(title) {
+  let t = compactWhitespace(decodeXmlEntities(title || ''));
+  if (!t) return '';
+
+  t = t
+    .replace(/^new listing[:\s-]*/i, '')
+    .replace(/\b(men'?s|women'?s|unisex)\b/gi, '')
+    .replace(/\b(size|sz)\s*[a-z0-9.-]+\b/gi, '')
+    .replace(/\bnwt\b|\bnwot\b|\bpre-?owned\b|\bused\b/gi, '')
+    .replace(/[^a-z0-9\s-]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Keep concise phrase window for trend intent.
+  const words = t.split(' ').filter(Boolean).slice(0, 6);
+  return normalizeTrendTerm(words.join(' '));
+}
+
+async function fetchEbayDiscoveryTerms(seedTerms) {
+  const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, 14);
+  const discovered = [];
+
+  for (const seed of seeds) {
+    try {
+      const url = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(seed)}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1`;
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      const html = await res.text();
+      if (!res.ok) continue;
+
+      const $ = cheerio.load(html);
+      const titles = $('.s-item__title')
+        .map((_, el) => compactWhitespace($(el).text()))
+        .get()
+        .filter(Boolean)
+        .slice(0, 80);
+
+      for (const title of titles) {
+        const candidate = titleToDiscoveryCandidate(title);
+        if (shouldUseTrendTerm(candidate)) discovered.push(candidate);
+      }
+    } catch (err) {
+      console.warn(`ebay discovery failed for seed "${seed}":`, err.message);
+    }
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const term of discovered) {
+    const key = getDedupeKey(term);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(term);
+  }
+  return applyDiversityCaps(deduped, Number(process.env.EBAY_DISCOVERY_BUCKET_CAP || 4)).slice(0, Number(process.env.MAX_EBAY_DISCOVERY_TERMS || 120));
+}
+
 async function classifyFashionTermsWithAI(rawTerms) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !Array.isArray(rawTerms) || rawTerms.length === 0) return null;
@@ -716,18 +777,21 @@ async function syncMarketPulse() {
   console.log("🚀 Starting Zero-API Market Sync...");
   const googleJobId = await startCollectorJob('google_trends');
   const corpusJobId = await startCollectorJob('fashion_corpus_ai');
+  const ebayDiscoveryJobId = await startCollectorJob('ebay_discovery');
   const ebayJobId = await startCollectorJob('ebay');
   const redditJobId = await startCollectorJob('reddit');
   let ebayFailures = 0;
   let ebayNoSampleCount = 0;
   let googleFailures = 0;
   let corpusFailures = 0;
+  let ebayDiscoveryFailures = 0;
   let redditFailures = 0;
   const redditFailureDetails = [];
 
   try {
     let googleTrendsTerms = [];
     let corpusAiTerms = [];
+    let ebayDiscoveryTerms = [];
     try {
       const { rawTerms, filteredTerms } = await fetchGoogleTrendsTerms();
       let aiTerms = null;
@@ -783,9 +847,29 @@ async function syncMarketPulse() {
     }
 
     const activeQueryPacks = await getActiveQueryPacks();
+    try {
+      const { data: seedSignalRows } = await supabase
+        .from('market_signals')
+        .select('trend_name')
+        .order('heat_score', { ascending: false })
+        .limit(60);
+      const seedSignalTerms = (seedSignalRows || []).map((r) => String(r.trend_name || '').trim()).filter(Boolean);
+      const discoverySeeds = [...activeQueryPacks, ...seedSignalTerms];
+      ebayDiscoveryTerms = await fetchEbayDiscoveryTerms(discoverySeeds);
+      await finishCollectorJob(
+        ebayDiscoveryJobId,
+        'success',
+        `Generated ${ebayDiscoveryTerms.length} eBay-derived candidate terms.`
+      );
+    } catch (err) {
+      ebayDiscoveryFailures += 1;
+      await finishCollectorJob(ebayDiscoveryJobId, 'degraded', err.message);
+      console.error('❌ eBay discovery generation failed:', err.message);
+    }
+
     const discoveredTerms = mergeDiscoveredTerms(
       activeQueryPacks,
-      [...googleTrendsTerms, ...corpusAiTerms]
+      [...googleTrendsTerms, ...corpusAiTerms, ...ebayDiscoveryTerms]
     );
 
     // 1. Pull existing signals from database
@@ -906,6 +990,11 @@ async function syncMarketPulse() {
       await finishCollectorJob(corpusJobId, 'degraded', err.message);
     } else {
       await finishCollectorJob(corpusJobId, 'failed', err.message);
+    }
+    if (ebayDiscoveryFailures > 0) {
+      await finishCollectorJob(ebayDiscoveryJobId, 'degraded', err.message);
+    } else {
+      await finishCollectorJob(ebayDiscoveryJobId, 'failed', err.message);
     }
     await finishCollectorJob(redditJobId, 'failed', err.message);
     await finishCollectorJob(ebayJobId, 'failed', err.message);
