@@ -139,23 +139,41 @@ function buildPricePlan({
   confidence: ConfidenceLevel;
   riskText?: string;
 }) {
-  const entry = Math.max(10, toDollar(entryPrice));
-  const confidenceMult = confidence === "high" ? 0.14 : confidence === "med" ? 0.08 : 0.03;
-  const heatMult = Math.max(0.04, Math.min(0.22, Number(heat || 50) / 450));
-  const expectedSale = toDollar(entry * (1.18 + confidenceMult + heatMult));
-  const targetBuy = Math.max(8, toDollar(entry * 0.72));
-  const expectedProfit = Math.max(0, expectedSale - targetBuy);
+  // Thrift-first model:
+  // - entryPrice is treated as market resale expectation.
+  // - targetBuy is a strict thrift buy ceiling (percent of resale, capped).
+  // - expectedProfit is net of fees/shipping/prep/risk buffer.
+  const expectedSale = Math.max(18, toDollar(entryPrice));
   const risk = String(riskText || "").toLowerCase();
   const highRisk = risk.includes("replica") || risk.includes("auth");
+  const heatValue = Number(heat || 50);
+
+  const feeRate = 0.13;
+  const shippingCost = 7;
+  const prepCost = 3;
+  const riskBuffer = highRisk ? 6 : 2;
+
+  const heatAdj = heatValue >= 85 ? 0.04 : heatValue >= 70 ? 0.02 : 0;
+  const confidenceAdj = confidence === "high" ? 0.03 : confidence === "med" ? 0.01 : -0.01;
+  const riskAdj = highRisk ? 0.03 : 0;
+  const buyShare = Math.max(0.14, Math.min(0.34, 0.22 + heatAdj + confidenceAdj - riskAdj));
+  const targetBuy = Math.max(6, Math.min(70, toDollar(expectedSale * buyShare)));
+
+  const netSaleAfterCosts = Math.max(
+    0,
+    expectedSale * (1 - feeRate) - shippingCost - prepCost - riskBuffer
+  );
+  const expectedProfit = Math.max(0, toDollar(netSaleAfterCosts - targetBuy));
+  const profitMargin = expectedSale > 0 ? expectedProfit / expectedSale : 0;
 
   let decision: DecisionLabel = "Maybe";
-  let decisionReason = "Potential upside, but confirm condition and comps before buying.";
-  if (expectedProfit >= 65 && confidence !== "low" && !highRisk) {
+  let decisionReason = "Acceptable upside, but verify condition and comps in-store.";
+  if (expectedProfit >= 22 && profitMargin >= 0.3 && !(confidence === "low" && highRisk)) {
     decision = "Buy";
-    decisionReason = "Strong projected spread with acceptable risk profile.";
-  } else if (expectedProfit < 25 || (confidence === "low" && highRisk)) {
+    decisionReason = "Healthy thrift spread after fees and logistics.";
+  } else if (expectedProfit < 12 || profitMargin < 0.18 || (confidence === "low" && highRisk)) {
     decision = "Skip";
-    decisionReason = "Weak spread or elevated risk; better alternatives likely.";
+    decisionReason = "Net spread is thin or risk-adjusted downside is too high.";
   }
 
   return { targetBuy, expectedSale, expectedProfit, decision, decisionReason };
