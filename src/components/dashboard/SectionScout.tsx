@@ -1,4 +1,5 @@
 "use client";
+import { useMemo, useState } from "react";
 import { Target, Plus, Info, Award, Hash, CheckSquare, Image as ImageIcon } from "lucide-react";
 import {
   getCompAgeLabel,
@@ -244,6 +245,11 @@ export default function SectionScout({
   compChecks?: CompCheck[];
   collectorJobs?: CollectorJob[];
 }) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
+  const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip">("all");
+  const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
+
   const latestCollectorRun = getLatestCollectorRun(collectorJobs);
   const collectorRunAge = getRunAgeLabel(latestCollectorRun);
 
@@ -445,8 +451,88 @@ export default function SectionScout({
     // ... (Your other hardcoded items remain as fallback if DB is empty)
   ];
 
+  const matchesCommonFilters = (node: any): boolean => {
+    if (confidenceFilter !== "all" && node?.confidence !== confidenceFilter) return false;
+    if (decisionFilter !== "all" && node?.decision !== decisionFilter) return false;
+
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [
+      String(node?.name || ""),
+      String(node?.source || ""),
+      String(node?.intel || ""),
+      String(node?.brandRef || ""),
+      ...(Array.isArray(node?.what_to_buy) ? node.what_to_buy.map((v: string) => String(v || "")) : []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(q);
+  };
+
+  const sortNodes = (a: any, b: any) => {
+    if (sortMode === "mentions") return Number(b?.mentions || 0) - Number(a?.mentions || 0);
+    if (sortMode === "profit") return Number(b?.expected_profit || 0) - Number(a?.expected_profit || 0);
+    return Number(b?.heat || 0) - Number(a?.heat || 0);
+  };
+
+  const visibleBrandNodes = useMemo(
+    () => [...brandNodes].filter(matchesCommonFilters).sort(sortNodes),
+    [brandNodes, confidenceFilter, decisionFilter, searchTerm, sortMode]
+  );
+
+  const visibleTrendNodes = useMemo(
+    () => [...trendNodes].filter(matchesCommonFilters).sort(sortNodes),
+    [trendNodes, confidenceFilter, decisionFilter, searchTerm, sortMode]
+  );
+
   return (
     <div className="space-y-20 text-left pb-24">
+      <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
+          Research Filters
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search trends, brands, intel..."
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          />
+          <select
+            value={confidenceFilter}
+            onChange={(e) => setConfidenceFilter(e.target.value as "all" | "high" | "med" | "low")}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Confidence</option>
+            <option value="high">High Confidence</option>
+            <option value="med">Medium Confidence</option>
+            <option value="low">Low Confidence</option>
+          </select>
+          <select
+            value={decisionFilter}
+            onChange={(e) => setDecisionFilter(e.target.value as "all" | "Buy" | "Maybe" | "Skip")}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Decisions</option>
+            <option value="Buy">Buy</option>
+            <option value="Maybe">Maybe</option>
+            <option value="Skip">Skip</option>
+          </select>
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as "heat" | "mentions" | "profit")}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value="heat">Sort: Heat</option>
+            <option value="mentions">Sort: Mentions</option>
+            <option value="profit">Sort: Profit</option>
+          </select>
+        </div>
+        <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
+          Showing {visibleBrandNodes.length} brand nodes and {visibleTrendNodes.length} style trends
+        </p>
+      </section>
+
       {/* BRAND NODES */}
       <section>
         <div className="flex items-center gap-4 mb-10 pl-2 border-l-4 border-emerald-500">
@@ -454,7 +540,7 @@ export default function SectionScout({
           <h4 className="text-4xl font-black italic uppercase tracking-tighter">Brand Nodes</h4>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-          {brandNodes.map((node) => (
+          {visibleBrandNodes.map((node) => (
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
@@ -559,7 +645,7 @@ export default function SectionScout({
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-          {trendNodes.map((node: any) => (
+          {visibleTrendNodes.map((node: any) => (
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 

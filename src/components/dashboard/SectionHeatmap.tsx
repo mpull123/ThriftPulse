@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Zap, TrendingUp, Activity } from "lucide-react";
 import {
@@ -88,6 +88,9 @@ export default function SectionHeatmap({
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "signal">("signal");
   const [freshOnly, setFreshOnly] = useState(false);
   const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
 
   // If props are passed (from parent fetch), use them
   useEffect(() => {
@@ -108,7 +111,7 @@ export default function SectionHeatmap({
 
   if (loading) return <div className="p-8 text-slate-500 animate-pulse font-black uppercase tracking-widest italic text-xs">Generating Heatmap...</div>;
 
-  const enrichedData = data.map((item) => {
+  const enrichedData = useMemo(() => data.map((item) => {
     const latestComp = getLatestCompCheck(item, compChecks);
     const compConfidence = getConfidenceFromComp(latestComp);
     const mentions = getTrendMentions(item, latestComp);
@@ -121,14 +124,29 @@ export default function SectionHeatmap({
       mentions,
       signalScore,
       confidence,
+      inferredType: String(item?.track || "").toLowerCase().includes("brand") ? "brand" : "style",
       compStatus: !latestComp ? "none" : isCompStale(latestComp) ? "stale" : "fresh",
     };
-  });
+  }), [data, compChecks]);
 
   const filteredData = enrichedData.filter((item) => {
     if (verifiedOnly && !(item.confidence === "high" || item.confidence === "med")) return false;
     if (freshOnly && item.compStatus !== "fresh") return false;
     if (lowBuyInOnly && Number(item.exit_price || 0) > 90) return false;
+    if (confidenceFilter !== "all" && item.confidence !== confidenceFilter) return false;
+    if (sourceFilter !== "all" && item.inferredType !== sourceFilter) return false;
+    const q = searchTerm.trim().toLowerCase();
+    if (q) {
+      const haystack = [
+        String(item?.trend_name || ""),
+        String(item?.hook_brand || ""),
+        String(item?.track || ""),
+        String(item?.market_sentiment || ""),
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
     return true;
   });
 
@@ -165,11 +183,36 @@ export default function SectionHeatmap({
         </div>
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
           Trends now mirror Research metrics: mentions, signal score, and confidence.
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search trend or brand..."
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          />
+          <select
+            value={confidenceFilter}
+            onChange={(e) => setConfidenceFilter(e.target.value as "all" | "high" | "med" | "low")}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Confidence</option>
+            <option value="high">High</option>
+            <option value="med">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value as "all" | "brand" | "style")}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Types</option>
+            <option value="style">Style</option>
+            <option value="brand">Brand</option>
+          </select>
           <button
             onClick={() => setSortMode("signal")}
             className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${sortMode === "signal" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
