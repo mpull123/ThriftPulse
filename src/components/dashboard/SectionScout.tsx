@@ -42,6 +42,78 @@ function extractTrendTargets(signal: any): string[] {
   return [...targets].filter(Boolean).slice(0, 10);
 }
 
+function buildPrioritizedLookFors({
+  title,
+  kind,
+  hookBrand,
+  evidence = [],
+}: {
+  title: string;
+  kind: "brand" | "style";
+  hookBrand?: string;
+  evidence?: string[];
+}): string[] {
+  const t = String(title || "").toLowerCase();
+  const b = String(hookBrand || "").trim();
+  const ranked: Array<{ priority: number; text: string }> = [];
+  const add = (priority: number, text: string) => {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    ranked.push({ priority, text: clean });
+  };
+
+  if (kind === "brand") {
+    add(100, `Check brand label and era tag first (${title}).`);
+    add(95, "Check stitching quality and hardware consistency.");
+    add(90, "Inspect high-wear zones for flaws (cuffs, hems, knees, collar).");
+    add(85, "Prioritize clean condition and minimal repairs.");
+  } else {
+    add(100, `Confirm the core silhouette for "${title}" before anything else.`);
+    add(95, "Prioritize clean condition and low-wear fabric.");
+    add(90, "Verify high-demand materials and construction details.");
+  }
+
+  if (b) add(88, `Prioritize branded versions from ${b}.`);
+
+  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
+    add(84, "Check zipper function, lining integrity, and cuff condition.");
+    add(80, "Prioritize heavyweight fabric and clean hardware.");
+  }
+  if (t.includes("denim") || t.includes("jean") || t.includes("double knee") || t.includes("cargo")) {
+    add(84, "Check seams, crotch, and knee wear carefully.");
+    add(80, "Prioritize strong fades/washes with no major distress.");
+  }
+  if (t.includes("boot") || t.includes("sneaker") || t.includes("shoe")) {
+    add(84, "Inspect outsole wear, midsole aging, and heel drag.");
+    add(80, "Prioritize cleaner uppers and structurally solid pairs.");
+  }
+  if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) {
+    add(84, "Inspect cuffs, collar, and pilling or shrinkage.");
+    add(80, "Prioritize stronger fabric weight and shape retention.");
+  }
+  if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) {
+    add(78, "Check era-specific tags and print quality for authenticity.");
+  }
+
+  evidence
+    .map((v) => String(v || "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .forEach((v, i) => add(72 - i, `Look for cue: ${v}.`));
+
+  const deduped = new Map<string, { priority: number; text: string }>();
+  for (const item of ranked) {
+    const key = item.text.toLowerCase();
+    const existing = deduped.get(key);
+    if (!existing || item.priority > existing.priority) deduped.set(key, item);
+  }
+
+  return [...deduped.values()]
+    .sort((a, b) => b.priority - a.priority)
+    .map((v) => v.text)
+    .slice(0, 8);
+}
+
 function inferTrendAngle(trendName: string): string {
   const t = String(trendName || "").toLowerCase();
   if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) return "Outerwear demand is active.";
@@ -143,21 +215,50 @@ function getSignalIntel(signal: any): string {
   const trendName = String(signal?.trend_name || "").trim();
   const heat = Number(signal?.heat_score || 0);
   const price = Number(signal?.exit_price || 0);
+  const t = trendName.toLowerCase();
+
+  const titleSpecific =
+    t.includes("jacket") || t.includes("coat") || t.includes("anorak")
+      ? `For ${trendName}, prioritize clean zippers, lining integrity, and low cuff wear.`
+      : t.includes("denim") || t.includes("jean") || t.includes("cargo") || t.includes("double knee")
+        ? `For ${trendName}, prioritize seam strength, low knee/crotch wear, and strong wash/fade.`
+        : t.includes("boot") || t.includes("sneaker") || t.includes("shoe")
+          ? `For ${trendName}, prioritize outsole condition, midsole integrity, and clean uppers.`
+          : t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")
+            ? `For ${trendName}, prioritize fabric weight, minimal pilling, and cuff/collar condition.`
+            : `For ${trendName}, prioritize construction quality, clean condition, and high-demand variants.`;
 
   const parts = [];
-  if (sentiment) parts.push(sentiment);
-  if (brand) parts.push(`Brand watch: ${brand}.`);
-  if (risk) parts.push(`Risk: ${risk}.`);
-  if (!sentiment) {
-    parts.push(inferTrendAngle(trendName));
-    if (trendName) parts.push(`Signal focus: ${trendName}.`);
-    if (price > 0) parts.push(`Current resale target centers near $${Math.round(price)}.`);
-    if (heat >= 85) parts.push("Momentum is currently high.");
-    else if (heat >= 70) parts.push("Momentum is stable to rising.");
-    else parts.push("Momentum is early but monitorable.");
-  }
+  parts.push(titleSpecific);
+  if (sentiment) parts.push(`Signal read: ${sentiment}`);
+  if (brand) parts.push(`Brand overlap to watch: ${brand}.`);
+  if (risk) parts.push(`Risk check: ${risk}.`);
+  if (price > 0) parts.push(`Current resale target centers near $${Math.round(price)}.`);
+  if (heat >= 85) parts.push("Momentum is currently high.");
+  else if (heat >= 70) parts.push("Momentum is stable to rising.");
+  else parts.push("Momentum is early but monitorable.");
 
   return parts.join(" ") || "Live trend signal from eBay + fashion source pipeline.";
+}
+
+function getBrandIntel(brandName: string, notes: string[], avgHeat: number): string {
+  const b = String(brandName || "").trim();
+  const uniqueNotes = notes.filter(Boolean).slice(0, 2);
+  const base = `For ${b}, prioritize authentic era tags, hardware consistency, and low-wear condition.`;
+  const heatLine =
+    avgHeat >= 85 ? "Demand is currently high with fast resale velocity."
+    : avgHeat >= 70 ? "Demand is stable with reliable turnover."
+    : "Demand is early-stage; buy only when margin is strong.";
+  return [base, ...uniqueNotes, heatLine].join(" ");
+}
+
+function isBrandSignal(signal: any): boolean {
+  const track = String(signal?.track || "").toLowerCase();
+  if (track.includes("brand")) return true;
+  const trendName = String(signal?.trend_name || "").trim().toLowerCase();
+  const hookBrand = String(signal?.hook_brand || "").trim().toLowerCase();
+  if (trendName && hookBrand && trendName === hookBrand) return true;
+  return false;
 }
 
 function toTargetBullet(item: string, kind: "brand" | "style"): string {
@@ -362,6 +463,7 @@ export default function SectionScout({
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareMode, setCompareMode] = useState<"profit" | "risk" | "velocity">("profit");
   const [savedPresets, setSavedPresets] = useState<ScoutSavedPreset[]>([]);
   const [showPresetManager, setShowPresetManager] = useState(false);
@@ -406,6 +508,7 @@ export default function SectionScout({
     setViewMode(payload.viewMode || "detailed");
     setLowBuyInOnly(Boolean(payload.lowBuyInOnly));
     setCompareIds([]);
+    setSelectedIds([]);
   };
 
   const latestCollectorRun = getLatestCollectorRun(collectorJobs);
@@ -543,9 +646,7 @@ export default function SectionScout({
       last_updated_at: null,
       source_counts: { ebay: 0, google: 0, ai: 0, discovery: 0 },
       collectorRunAge,
-      intel:
-        [...node.notes].slice(0, 2).join(" ") ||
-        "Live brand signal generated from market intelligence.",
+      intel: getBrandIntel(node.name, [...node.notes], avgHeat),
       entry_price: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
@@ -557,7 +658,12 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
-      what_to_buy: [...node.what].filter(Boolean).slice(0, 10),
+      what_to_buy: buildPrioritizedLookFors({
+        title: node.name,
+        kind: "brand",
+        hookBrand: node.name,
+        evidence: [...node.what].filter(Boolean).slice(0, 4),
+      }),
     };
   });
 
@@ -565,7 +671,7 @@ export default function SectionScout({
 
   // 2. STYLE TRENDS (Merged: Live DB Signals + Hardcoded)
   // Convert DB signals into the Node format used by the UI
-  const liveTrends = signals.map((s: any) => {
+  const liveTrends = signals.filter((s: any) => !isBrandSignal(s)).map((s: any) => {
     const latestComp = getLatestCompCheck(s, compChecks);
     const compConfidence = getConfidenceFromComp(latestComp);
     const signalScore = getSignalScore(s, latestComp);
@@ -604,7 +710,12 @@ export default function SectionScout({
       decision: plan.decision,
       decision_reason: plan.decisionReason,
       intel: getSignalIntel(s),
-      what_to_buy: topTargets.length ? topTargets : ["Check tag era", "Verify construction details"],
+      what_to_buy: buildPrioritizedLookFors({
+        title: s?.trend_name || "",
+        kind: "style",
+        hookBrand: s?.hook_brand || "",
+        evidence: topTargets,
+      }),
       brands_to_watch: inferBrandsForTrend(s?.trend_name, s?.hook_brand),
       brandRef: s?.hook_brand || null,
       compAgeLabel: getCompAgeLabel(latestComp),
@@ -679,12 +790,23 @@ export default function SectionScout({
     () => comparePool.filter((node: any) => compareIds.includes(String(node.id))),
     [comparePool, compareIds]
   );
+  const selectedNodes = useMemo(
+    () => comparePool.filter((node: any) => selectedIds.includes(String(node.id))),
+    [comparePool, selectedIds]
+  );
 
   const toggleCompare = (nodeId: string) => {
     setCompareIds((prev) => {
       const id = String(nodeId);
       if (prev.includes(id)) return prev.filter((v) => v !== id);
       if (prev.length >= 4) return prev;
+      return [...prev, id];
+    });
+  };
+  const toggleSelected = (nodeId: string) => {
+    setSelectedIds((prev) => {
+      const id = String(nodeId);
+      if (prev.includes(id)) return prev.filter((v) => v !== id);
       return [...prev, id];
     });
   };
@@ -711,24 +833,27 @@ export default function SectionScout({
 
   const demoteSelected = async () => {
     if (!onDemoteTrend) return;
-    for (const node of comparedNodes) {
+    for (const node of selectedNodes) {
       const id = String(node?.signal_id || "").trim();
       if (id) await onDemoteTrend(id);
     }
+    setSelectedIds([]);
     setCompareIds([]);
   };
 
   const archiveSelected = async () => {
     if (!onArchiveTrend) return;
-    for (const node of comparedNodes) {
+    for (const node of selectedNodes) {
       const id = String(node?.signal_id || "").trim();
       if (id) await onArchiveTrend(id);
     }
+    setSelectedIds([]);
     setCompareIds([]);
   };
 
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
     setCompareIds([]);
+    setSelectedIds([]);
     if (preset === "high_confidence") {
       setSearchTerm("");
       setConfidenceFilter("high");
@@ -887,22 +1012,29 @@ export default function SectionScout({
           Showing {visibleBrandNodes.length} brand nodes and {visibleTrendNodes.length} style trends
         </p>
         <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
-          Compare selected: {compareIds.length}/4
+          Selected nodes: {selectedIds.length} • Compare selected: {compareIds.length}/4
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap gap-2 items-center">
           <button
             onClick={() => void demoteSelected()}
-            disabled={comparedNodes.length === 0}
-            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500/10 text-rose-500 disabled:opacity-40"
+            disabled={selectedNodes.length === 0}
+            className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500 text-white disabled:opacity-40 shadow-sm"
           >
-            Demote Selected
+            Demote Selected ({selectedNodes.length})
           </button>
           <button
             onClick={() => void archiveSelected()}
-            disabled={comparedNodes.length === 0}
-            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            disabled={selectedNodes.length === 0}
+            className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 dark:bg-white text-white dark:text-slate-900 disabled:opacity-40 shadow-sm"
           >
-            Archive Selected
+            Archive Selected ({selectedNodes.length})
+          </button>
+          <button
+            onClick={() => setSelectedIds([])}
+            disabled={selectedNodes.length === 0}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+          >
+            Clear Selection
           </button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -1021,7 +1153,11 @@ export default function SectionScout({
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
-              className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-emerald-500/50`}
+              className={`group bg-white dark:bg-slate-900 border rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer ${
+                selectedIds.includes(String(node.id))
+                  ? "border-emerald-500 ring-2 ring-emerald-500/30"
+                  : "border-slate-200 dark:border-slate-800 hover:border-emerald-500/50"
+              }`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-emerald-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start gap-3 mb-6">
@@ -1064,7 +1200,7 @@ export default function SectionScout({
                  <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed max-h-16 overflow-hidden">{node.intel}</p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                  {(node.what_to_buy || []).slice(0, 2).map((item: string, i: number) => (
+                  {(node.what_to_buy || []).slice(0, 4).map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                       {toTargetBullet(item, "brand")}
                     </li>
@@ -1125,6 +1261,19 @@ export default function SectionScout({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    toggleSelected(String(node.id));
+                  }}
+                  className={`w-full py-3 rounded-2xl font-black uppercase italic text-[11px] tracking-widest transition-all ${
+                    selectedIds.includes(String(node.id))
+                      ? "bg-emerald-500/15 text-emerald-600"
+                      : "bg-emerald-500/10 text-emerald-600"
+                  }`}
+                >
+                  {selectedIds.includes(String(node.id)) ? "Selected" : "Select"}
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
                     toggleCompare(String(node.id));
                   }}
                   className={`w-full py-3 rounded-2xl font-black uppercase italic text-[11px] tracking-widest transition-all ${
@@ -1161,7 +1310,11 @@ export default function SectionScout({
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
-              className={`group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer hover:border-blue-500/50`}
+              className={`group bg-white dark:bg-slate-900 border rounded-[3rem] ${viewMode === "compact" ? "p-7" : "p-10"} transition-all hover:shadow-2xl relative overflow-hidden flex flex-col cursor-pointer ${
+                selectedIds.includes(String(node.id))
+                  ? "border-blue-500 ring-2 ring-blue-500/30"
+                  : "border-slate-200 dark:border-slate-800 hover:border-blue-500/50"
+              }`}
             >
               <div className="absolute top-0 left-0 h-1.5 bg-blue-500" style={{ width: `${node.heat}%` }} />
               <div className="flex justify-between items-start gap-3 mb-6">
@@ -1209,7 +1362,7 @@ export default function SectionScout({
                  </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 2).map((item: string, i: number) => (
+                   {node.what_to_buy && node.what_to_buy.slice(0, 4).map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                        {toTargetBullet(item, "style")}
                      </li>
@@ -1297,6 +1450,19 @@ export default function SectionScout({
                     Track in Radar
                   </button>
                 )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSelected(String(node.id));
+                  }}
+                  className={`w-full py-3 rounded-2xl font-black uppercase italic text-[11px] tracking-widest transition-all ${
+                    selectedIds.includes(String(node.id))
+                      ? "bg-blue-500/15 text-blue-500"
+                      : "bg-blue-500/10 text-blue-500"
+                  }`}
+                >
+                  {selectedIds.includes(String(node.id)) ? "Selected" : "Select"}
+                </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
