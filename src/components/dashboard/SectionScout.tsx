@@ -128,22 +128,31 @@ function toDollar(value: number): number {
   return Math.max(0, Math.round(Number(value || 0)));
 }
 
+function formatUsd(value: number): string {
+  return `$${toDollar(value)}`;
+}
+
 function buildPricePlan({
   entryPrice,
   heat,
   confidence,
   riskText,
+  latestComp,
 }: {
   entryPrice: number;
   heat: number;
   confidence: ConfidenceLevel;
   riskText?: string;
+  latestComp?: CompCheck | null;
 }) {
-  // Thrift-first model:
-  // - entryPrice is treated as market resale expectation.
-  // - targetBuy is a strict thrift buy ceiling (percent of resale, capped).
-  // - expectedProfit is net of fees/shipping/prep/risk buffer.
-  const expectedSale = Math.max(18, toDollar(entryPrice));
+  // Used-goods pricing model:
+  // - entryPrice starts from market sold comps.
+  // - expectedSale applies used-condition discount and risk adjustments.
+  // - targetBuy uses a thrift cap to preserve net margin after costs.
+  const compLow = Number(latestComp?.price_low || 0);
+  const compHigh = Number(latestComp?.price_high || 0);
+  const compMid = compLow > 0 && compHigh > 0 ? (compLow + compHigh) / 2 : 0;
+  const marketCompSale = Math.max(18, toDollar(compMid > 0 ? compMid : entryPrice));
   const risk = String(riskText || "").toLowerCase();
   const highRisk = risk.includes("replica") || risk.includes("auth");
   const heatValue = Number(heat || 50);
@@ -152,31 +161,40 @@ function buildPricePlan({
   const shippingCost = 7;
   const prepCost = 3;
   const riskBuffer = highRisk ? 6 : 2;
-
-  const heatAdj = heatValue >= 85 ? 0.04 : heatValue >= 70 ? 0.02 : 0;
-  const confidenceAdj = confidence === "high" ? 0.03 : confidence === "med" ? 0.01 : -0.01;
-  const riskAdj = highRisk ? 0.03 : 0;
-  const buyShare = Math.max(0.14, Math.min(0.34, 0.22 + heatAdj + confidenceAdj - riskAdj));
-  const targetBuy = Math.max(6, Math.min(70, toDollar(expectedSale * buyShare)));
+  const usedConditionFactorBase = confidence === "high" ? 0.9 : confidence === "med" ? 0.84 : 0.78;
+  const heatLift = heatValue >= 85 ? 0.03 : heatValue >= 70 ? 0.01 : 0;
+  const riskPenalty = highRisk ? 0.05 : 0;
+  const usedConditionFactor = Math.max(0.66, Math.min(0.93, usedConditionFactorBase + heatLift - riskPenalty));
+  const expectedSale = Math.max(15, toDollar(marketCompSale * usedConditionFactor));
 
   const netSaleAfterCosts = Math.max(
     0,
     expectedSale * (1 - feeRate) - shippingCost - prepCost - riskBuffer
   );
+  const desiredProfit = Math.max(10, Math.min(55, toDollar(expectedSale * 0.24)));
+  const targetBuy = Math.max(4, Math.min(60, toDollar(netSaleAfterCosts - desiredProfit)));
   const expectedProfit = Math.max(0, toDollar(netSaleAfterCosts - targetBuy));
   const profitMargin = expectedSale > 0 ? expectedProfit / expectedSale : 0;
 
   let decision: DecisionLabel = "Maybe";
-  let decisionReason = "Acceptable upside, but verify condition and comps in-store.";
-  if (expectedProfit >= 22 && profitMargin >= 0.3 && !(confidence === "low" && highRisk)) {
+  let decisionReason = "Used-goods upside looks fair, but confirm condition in-store.";
+  if (expectedProfit >= 20 && profitMargin >= 0.28 && !(confidence === "low" && highRisk)) {
     decision = "Buy";
-    decisionReason = "Healthy thrift spread after fees and logistics.";
-  } else if (expectedProfit < 12 || profitMargin < 0.18 || (confidence === "low" && highRisk)) {
+    decisionReason = "Healthy used-resale spread after fees, shipping, and prep.";
+  } else if (expectedProfit < 10 || profitMargin < 0.16 || (confidence === "low" && highRisk)) {
     decision = "Skip";
-    decisionReason = "Net spread is thin or risk-adjusted downside is too high.";
+    decisionReason = "Used-condition margin is thin or risk-adjusted downside is too high.";
   }
 
-  return { targetBuy, expectedSale, expectedProfit, decision, decisionReason };
+  return {
+    targetBuy,
+    expectedSale,
+    expectedProfit,
+    decision,
+    decisionReason,
+    compLow: toDollar(compLow),
+    compHigh: toDollar(compHigh),
+  };
 }
 
 function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
@@ -338,6 +356,7 @@ export default function SectionScout({
       heat: avgHeat,
       confidence: node.latestComp ? compConfidence : fallbackConfidence,
       riskText,
+      latestComp: node.latestComp,
     });
 
     return {
@@ -358,6 +377,8 @@ export default function SectionScout({
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
       expected_profit: plan.expectedProfit,
+      comp_low: plan.compLow,
+      comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
       what_to_buy: [...node.what].filter(Boolean).slice(0, 10),
@@ -380,6 +401,7 @@ export default function SectionScout({
       heat: s.heat_score || 50,
       confidence,
       riskText: s.risk_factor || "",
+      latestComp,
     });
 
     return {
@@ -396,6 +418,8 @@ export default function SectionScout({
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
       expected_profit: plan.expectedProfit,
+      comp_low: plan.compLow,
+      comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
       intel: getSignalIntel(s),
@@ -441,7 +465,6 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
-                     <span className="bg-emerald-500/10 text-emerald-600 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
                      {node.decision && (
                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
@@ -471,10 +494,10 @@ export default function SectionScout({
                    </div>
                  )}
                  <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest flex items-center mb-2 italic"><Info size={14} className="mr-2" /> Brand Intel:</p>
-                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed">{node.intel}</p>
+                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed max-h-16 overflow-hidden">{node.intel}</p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                  {(node.what_to_buy || []).slice(0, 3).map((item: string, i: number) => (
+                  {(node.what_to_buy || []).slice(0, 2).map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                       {toTargetBullet(item, "brand")}
                     </li>
@@ -482,22 +505,11 @@ export default function SectionScout({
                  </ul>
               </div>
               <div className="mt-auto space-y-4">
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Price Bands</p>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Buy</p>
-                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.target_buy ?? node.entry_price}</p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Sale</p>
-                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.expected_sale ?? node.entry_price}</p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Profit</p>
-                      <p className="text-sm font-black text-emerald-500">${node.expected_profit ?? 0}</p>
-                    </div>
-                  </div>
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Used Pricing</p>
+                  <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
+                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ~ ${formatUsd(node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                  </p>
                 </div>
                 <div className="flex items-center justify-between">
                    <div>
@@ -558,7 +570,6 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
-                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
                      {node.decision && (
                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
@@ -569,11 +580,6 @@ export default function SectionScout({
                              : "bg-rose-500/10 text-rose-500"
                        }`}>
                          {node.decision}
-                       </span>
-                     )}
-                     {node.signalScore && (
-                       <span className="bg-slate-900/10 text-slate-700 dark:text-slate-200 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
-                         Signal {node.signalScore}
                        </span>
                      )}
                   </div>
@@ -596,12 +602,12 @@ export default function SectionScout({
                  <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center mb-2 italic">
                    <Info size={14} className="mr-2" /> Trend Intel:
                  </p>
-                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed mb-4">
+                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed mb-4 max-h-16 overflow-hidden">
                    {node.intel}
                  </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 3).map((item: string, i: number) => (
+                   {node.what_to_buy && node.what_to_buy.slice(0, 2).map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                        {toTargetBullet(item, "style")}
                      </li>
@@ -610,22 +616,11 @@ export default function SectionScout({
               </div>
 
               <div className="mt-auto space-y-4 pt-6 border-t dark:border-slate-800">
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Price Bands</p>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Buy</p>
-                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.target_buy ?? node.entry_price}</p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Sale</p>
-                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.expected_sale ?? node.entry_price}</p>
-                    </div>
-                    <div>
-                      <p className="text-[8px] font-black uppercase text-slate-400">Profit</p>
-                      <p className="text-sm font-black text-emerald-500">${node.expected_profit ?? 0}</p>
-                    </div>
-                  </div>
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Used Pricing</p>
+                  <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
+                    {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ~ ${formatUsd(node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
+                  </p>
                 </div>
                 <div className="flex items-center justify-between">
                    <div>

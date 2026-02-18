@@ -413,6 +413,11 @@ export default function DashboardPage() {
                     <p className="text-xl font-black text-emerald-500">${selectedNode.expected_profit ?? 0}</p>
                   </div>
                 </div>
+                {(selectedNode.comp_low || selectedNode.comp_high) && (
+                  <p className="mt-4 text-[11px] font-black uppercase tracking-widest text-slate-500">
+                    Comp Range: ${selectedNode.comp_low || 0} - ${selectedNode.comp_high || 0}
+                  </p>
+                )}
               </div>
 
               <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">

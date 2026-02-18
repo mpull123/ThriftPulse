@@ -103,14 +103,55 @@ async function fetchEbayStats(term, fallbackPrice) {
   if (!prices.length) {
     return {
       avgPrice: safeNumber(fallbackPrice, 0),
-      sampleCount: 0
+      sampleCount: 0,
+      priceLow: 0,
+      priceHigh: 0,
+      priceMedian: safeNumber(fallbackPrice, 0)
     };
   }
 
+  prices.sort((a, b) => a - b);
+  const at = (ratio) => {
+    const idx = Math.max(0, Math.min(prices.length - 1, Math.floor((prices.length - 1) * ratio)));
+    return prices[idx];
+  };
+  const priceLow = at(0.25);
+  const priceMedian = at(0.5);
+  const priceHigh = at(0.75);
+
   return {
     avgPrice: Math.floor(prices.reduce((a, b) => a + b, 0) / prices.length),
-    sampleCount: prices.length
+    sampleCount: prices.length,
+    priceLow: Math.floor(priceLow),
+    priceHigh: Math.floor(priceHigh),
+    priceMedian: Math.floor(priceMedian)
   };
+}
+
+async function writeCompCheck({
+  signalId,
+  trendName,
+  sampleSize,
+  priceLow,
+  priceHigh,
+  notes,
+}) {
+  try {
+    const { error } = await supabase.from('comp_checks').insert([{
+      signal_id: signalId || null,
+      trend_name: trendName || null,
+      sample_size: safeNumber(sampleSize, 0),
+      checked_at: new Date().toISOString(),
+      price_low: safeNumber(priceLow, 0),
+      price_high: safeNumber(priceHigh, 0),
+      notes: notes || null,
+    }]);
+    if (error) {
+      console.warn(`comp_checks insert failed (${trendName}):`, error.message);
+    }
+  } catch (err) {
+    console.warn(`comp_checks insert threw (${trendName}):`, err.message);
+  }
 }
 
 
@@ -606,6 +647,33 @@ function calculateHeatScoreFromFreeSignals({
   return Math.max(20, Math.min(99, blended));
 }
 
+function calculateMentionCount({
+  ebaySampleCount,
+  googleTrendHit,
+  corpusHit,
+  discoveryHit,
+  compSampleSize = 0
+}) {
+  const ebay = safeNumber(ebaySampleCount, 0);
+  const google = googleTrendHit ? 10 : 0;
+  const corpus = corpusHit ? 7 : 0;
+  const discovery = discoveryHit ? 5 : 0;
+  const comp = Math.min(20, safeNumber(compSampleSize, 0) * 2);
+  return Math.max(0, Math.round(ebay + google + corpus + discovery + comp));
+}
+
+function calculateSignalScore({
+  heatScore,
+  ebaySampleCount,
+  sourceSignalCount
+}) {
+  const heat = safeNumber(heatScore, 50);
+  const ebay = safeNumber(ebaySampleCount, 0);
+  const sourceCount = safeNumber(sourceSignalCount, 0);
+  const score = 18 + Math.round(heat * 0.42) + Math.min(28, ebay) + sourceCount * 9;
+  return Math.max(10, Math.min(99, score));
+}
+
 async function getActiveQueryPacks() {
   const { data, error } = await supabase
     .from('subreddits')
@@ -672,6 +740,22 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
             track: inferTrack(term, inferBrandFromTerm(term)),
             hook_brand: inferBrandFromTerm(term),
             market_sentiment: 'AI + eBay validated trend candidate.',
+            ebay_sample_count: sampleCount,
+            google_trend_hits: 1,
+            ai_corpus_hits: 0,
+            ebay_discovery_hits: 0,
+            source_signal_count: 2,
+            mention_count: calculateMentionCount({
+              ebaySampleCount: sampleCount,
+              googleTrendHit: true,
+              corpusHit: false,
+              discoveryHit: false,
+            }),
+            confidence_score: calculateSignalScore({
+              heatScore,
+              ebaySampleCount: sampleCount,
+              sourceSignalCount: 2,
+            }),
             heat_score: heatScore,
             exit_price: Math.max(10, avgPrice),
             updated_at: new Date().toISOString()
@@ -680,6 +764,14 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms) {
         );
 
       if (!error) {
+        await writeCompCheck({
+          signalId: null,
+          trendName: term,
+          sampleSize: sampleCount,
+          priceLow: Math.max(1, Math.floor(avgPrice * 0.85)),
+          priceHigh: Math.max(1, Math.floor(avgPrice * 1.15)),
+          notes: 'Discovery-mode sold comps snapshot.',
+        });
         created += 1;
         console.log(`🆕 Discovered trend: ${term} | Heat: ${heatScore} | $${avgPrice} | Sample: ${sampleCount}`);
       } else {
@@ -808,18 +900,24 @@ async function syncMarketPulse() {
     }
 
     const googleSet = new Set(googleTrendsTerms.map((t) => t.toLowerCase()));
+    const corpusSet = new Set(corpusAiTerms.map((t) => String(t || '').toLowerCase()));
+    const discoverySet = new Set(ebayDiscoveryTerms.map((t) => String(t || '').toLowerCase()));
 
     for (const signal of signals) {
       console.log(`🔍 Syncing: ${signal.trend_name}`);
 
       let avgPrice = safeNumber(signal.exit_price, 0);
       let sampleCount = 0;
+      let priceLow = 0;
+      let priceHigh = 0;
       const googleTrendBoost = googleSet.has(String(signal.trend_name || '').toLowerCase());
 
       try {
         const ebayStats = await fetchEbayStats(signal.trend_name, signal.exit_price);
         avgPrice = ebayStats.avgPrice;
         sampleCount = ebayStats.sampleCount;
+        priceLow = ebayStats.priceLow || 0;
+        priceHigh = ebayStats.priceHigh || 0;
         if (sampleCount === 0) ebayNoSampleCount += 1;
       } catch (err) {
         ebayFailures += 1;
@@ -834,12 +932,40 @@ async function syncMarketPulse() {
         googleTrendBoost
       });
 
+      const signalKey = String(signal.trend_name || '').toLowerCase().trim();
+      const googleTrendHit = googleSet.has(signalKey);
+      const corpusHit = corpusSet.has(signalKey);
+      const discoveryHit = discoverySet.has(signalKey);
+      const sourceSignalCount =
+        (sampleCount > 0 ? 1 : 0) +
+        (googleTrendHit ? 1 : 0) +
+        (corpusHit ? 1 : 0) +
+        (discoveryHit ? 1 : 0);
+      const mentionCount = calculateMentionCount({
+        ebaySampleCount: sampleCount,
+        googleTrendHit,
+        corpusHit,
+        discoveryHit,
+      });
+      const confidenceScore = calculateSignalScore({
+        heatScore: newHeat,
+        ebaySampleCount: sampleCount,
+        sourceSignalCount,
+      });
+
       // 2. UPDATE SUPABASE
       const { error: upError } = await supabase
         .from('market_signals')
         .update({ 
           track: inferTrack(signal.trend_name, inferBrandFromTerm(signal.trend_name)),
           hook_brand: signal.hook_brand || inferBrandFromTerm(signal.trend_name),
+          ebay_sample_count: sampleCount,
+          google_trend_hits: googleTrendHit ? 1 : 0,
+          ai_corpus_hits: corpusHit ? 1 : 0,
+          ebay_discovery_hits: discoveryHit ? 1 : 0,
+          source_signal_count: sourceSignalCount,
+          mention_count: mentionCount,
+          confidence_score: confidenceScore,
           exit_price: avgPrice, 
           heat_score: newHeat,
           updated_at: new Date() 
@@ -848,8 +974,18 @@ async function syncMarketPulse() {
 
       if (upError) console.error(`❌ Update failed for ${signal.trend_name}:`, upError.message);
       else {
+        if (sampleCount > 0) {
+          await writeCompCheck({
+            signalId: signal.id,
+            trendName: signal.trend_name,
+            sampleSize: sampleCount,
+            priceLow,
+            priceHigh,
+            notes: `eBay sold comps snapshot (${sampleCount} samples).`,
+          });
+        }
         console.log(
-          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | eBay Sample: ${sampleCount} | GoogleBoost: ${googleTrendBoost ? 'yes' : 'no'}`
+          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | Mentions: ${mentionCount} | SignalScore: ${confidenceScore}`
         );
       }
     }
