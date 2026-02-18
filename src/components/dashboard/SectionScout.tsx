@@ -34,6 +34,36 @@ function inferTrendAngle(trendName: string): string {
   return "Cross-category fashion interest is measurable.";
 }
 
+function hashString(input: string): number {
+  let hash = 0;
+  const text = String(input || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
+  const heat = Number(signal?.heat_score || 0);
+  const cues = Array.isArray(signal?.visual_cues) ? signal.visual_cues.length : 0;
+  const hasBrand = Boolean(String(signal?.hook_brand || "").trim());
+  const hasSentiment = Boolean(String(signal?.market_sentiment || "").trim());
+  const sample = Number(latestComp?.sample_size || 0);
+  const jitter = hashString(String(signal?.trend_name || "")) % 21;
+
+  const estimated =
+    18 +
+    Math.round(heat * 1.35) +
+    Math.min(22, cues * 4) +
+    (hasBrand ? 11 : 0) +
+    (hasSentiment ? 8 : 0) +
+    Math.min(35, sample * 3) +
+    jitter;
+
+  return Math.max(12, Math.min(280, estimated));
+}
+
 function getSignalIntel(signal: any): string {
   const sentiment = String(signal?.market_sentiment || "").trim();
   const risk = String(signal?.risk_factor || "").trim();
@@ -248,7 +278,7 @@ export default function SectionScout({
       heat: s.heat_score || 50,
       source: s?.track || "Live Monitor",
       sentiment: s.heat_score > 80 ? "Surging" : "Stable",
-      mentions: Math.floor((s.heat_score || 0) * 2.5), // Simulated metrics based on heat
+      mentions: getTrendMentions(s, latestComp),
       entry_price: s.exit_price || 0,
       intel: getSignalIntel(s),
       what_to_buy: topTargets.length ? topTargets : ["Check tag era", "Verify construction details"],
@@ -406,6 +436,12 @@ export default function SectionScout({
                      </span>
                    </div>
                  )}
+                 <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center mb-2 italic">
+                   <Info size={14} className="mr-2" /> Trend Intel:
+                 </p>
+                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed mb-4">
+                   {node.intel}
+                 </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
                  <ul className="space-y-2">
                    {node.what_to_buy && node.what_to_buy.slice(0, 3).map((item: string, i: number) => (
