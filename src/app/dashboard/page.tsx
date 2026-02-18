@@ -373,6 +373,48 @@ export default function DashboardPage() {
             </div>
 
             <div className="space-y-8">
+              {(selectedNode.decision || selectedNode.decision_reason) && (
+                <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Buy Decision</h4>
+                  <div className="flex items-center gap-3 mb-3">
+                    {selectedNode.decision && (
+                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                        selectedNode.decision === "Buy"
+                          ? "bg-emerald-500/10 text-emerald-500"
+                          : selectedNode.decision === "Maybe"
+                            ? "bg-amber-500/10 text-amber-500"
+                            : "bg-rose-500/10 text-rose-500"
+                      }`}>
+                        {selectedNode.decision}
+                      </span>
+                    )}
+                  </div>
+                  {selectedNode.decision_reason && (
+                    <p className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {selectedNode.decision_reason}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Price Bands</h4>
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div>
+                    <p className="text-[9px] font-black uppercase text-slate-400">Target Buy</p>
+                    <p className="text-xl font-black text-slate-900 dark:text-white">${selectedNode.target_buy ?? selectedNode.entry_price}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase text-slate-400">Expected Sale</p>
+                    <p className="text-xl font-black text-slate-900 dark:text-white">${selectedNode.expected_sale ?? selectedNode.entry_price}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase text-slate-400">Expected Profit</p>
+                    <p className="text-xl font-black text-emerald-500">${selectedNode.expected_profit ?? 0}</p>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Sourcing Intelligence</h4>
                 <ul className="list-disc pl-5 space-y-2">

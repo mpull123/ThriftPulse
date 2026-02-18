@@ -8,6 +8,7 @@ import {
   getRunAgeLabel,
 } from "@/lib/marketIntel";
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
+type DecisionLabel = "Buy" | "Maybe" | "Skip";
 
 function extractTrendTargets(signal: any): string[] {
   const targets = new Set<string>();
@@ -121,6 +122,43 @@ function formatMentions(value: number): string {
   if (!Number.isFinite(n)) return "0";
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(Math.round(n));
+}
+
+function toDollar(value: number): number {
+  return Math.max(0, Math.round(Number(value || 0)));
+}
+
+function buildPricePlan({
+  entryPrice,
+  heat,
+  confidence,
+  riskText,
+}: {
+  entryPrice: number;
+  heat: number;
+  confidence: ConfidenceLevel;
+  riskText?: string;
+}) {
+  const entry = Math.max(10, toDollar(entryPrice));
+  const confidenceMult = confidence === "high" ? 0.14 : confidence === "med" ? 0.08 : 0.03;
+  const heatMult = Math.max(0.04, Math.min(0.22, Number(heat || 50) / 450));
+  const expectedSale = toDollar(entry * (1.18 + confidenceMult + heatMult));
+  const targetBuy = Math.max(8, toDollar(entry * 0.72));
+  const expectedProfit = Math.max(0, expectedSale - targetBuy);
+  const risk = String(riskText || "").toLowerCase();
+  const highRisk = risk.includes("replica") || risk.includes("auth");
+
+  let decision: DecisionLabel = "Maybe";
+  let decisionReason = "Potential upside, but confirm condition and comps before buying.";
+  if (expectedProfit >= 65 && confidence !== "low" && !highRisk) {
+    decision = "Buy";
+    decisionReason = "Strong projected spread with acceptable risk profile.";
+  } else if (expectedProfit < 25 || (confidence === "low" && highRisk)) {
+    decision = "Skip";
+    decisionReason = "Weak spread or elevated risk; better alternatives likely.";
+  }
+
+  return { targetBuy, expectedSale, expectedProfit, decision, decisionReason };
 }
 
 function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
@@ -276,6 +314,14 @@ export default function SectionScout({
       evidenceCount: node.what.size,
       hasIntel: node.notes.size > 0,
     });
+    const riskText = [...node.notes].find((n: string) => String(n).toLowerCase().includes("risk")) || "";
+    const plan = buildPricePlan({
+      entryPrice: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
+      heat: avgHeat,
+      confidence: node.latestComp ? compConfidence : fallbackConfidence,
+      riskText,
+    });
+
     return {
       id: node.id,
       type: "brand",
@@ -291,11 +337,16 @@ export default function SectionScout({
         [...node.notes].slice(0, 2).join(" ") ||
         "Live brand signal generated from market intelligence.",
       entry_price: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
+      target_buy: plan.targetBuy,
+      expected_sale: plan.expectedSale,
+      expected_profit: plan.expectedProfit,
+      decision: plan.decision,
+      decision_reason: plan.decisionReason,
       what_to_buy: [...node.what].filter(Boolean).slice(0, 10),
     };
   });
 
-  const brandNodes = liveBrandNodes.length > 0 ? liveBrandNodes : fallbackBrandNodes;
+  const brandNodes: any[] = liveBrandNodes.length > 0 ? liveBrandNodes : fallbackBrandNodes;
 
   // 2. STYLE TRENDS (Merged: Live DB Signals + Hardcoded)
   // Convert DB signals into the Node format used by the UI
@@ -305,6 +356,13 @@ export default function SectionScout({
     const signalScore = getSignalScore(s, latestComp);
     const confidence = latestComp ? compConfidence : getFallbackConfidence(s, signalScore);
     const topTargets = extractTrendTargets(s);
+
+    const plan = buildPricePlan({
+      entryPrice: s.exit_price || 0,
+      heat: s.heat_score || 50,
+      confidence,
+      riskText: s.risk_factor || "",
+    });
 
     return {
       id: `live-${s.id}`,
@@ -317,6 +375,11 @@ export default function SectionScout({
       mentions: getTrendMentions(s, latestComp),
       signalScore,
       entry_price: s.exit_price || 0,
+      target_buy: plan.targetBuy,
+      expected_sale: plan.expectedSale,
+      expected_profit: plan.expectedProfit,
+      decision: plan.decision,
+      decision_reason: plan.decisionReason,
       intel: getSignalIntel(s),
       what_to_buy: topTargets.length ? topTargets : ["Check tag era", "Verify construction details"],
       brandRef: s?.hook_brand || null,
@@ -362,6 +425,17 @@ export default function SectionScout({
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-emerald-500/10 text-emerald-600 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
+                     {node.decision && (
+                       <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
+                         node.decision === "Buy"
+                           ? "bg-emerald-500/10 text-emerald-500"
+                           : node.decision === "Maybe"
+                             ? "bg-amber-500/10 text-amber-500"
+                             : "bg-rose-500/10 text-rose-500"
+                       }`}>
+                         {node.decision}
+                       </span>
+                     )}
                   </div>
                   <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words">{node.name}</h3>
                 </div>
@@ -390,6 +464,23 @@ export default function SectionScout({
                  </ul>
               </div>
               <div className="mt-auto space-y-4">
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Price Bands</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Buy</p>
+                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.target_buy ?? node.entry_price}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Sale</p>
+                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.expected_sale ?? node.entry_price}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Profit</p>
+                      <p className="text-sm font-black text-emerald-500">${node.expected_profit ?? 0}</p>
+                    </div>
+                  </div>
+                </div>
                 <div className="flex items-center justify-between">
                    <div>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic">Target Entry</p>
@@ -451,6 +542,17 @@ export default function SectionScout({
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
                      <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">{node.sentiment}</span>
                      {node.confidence && <ConfidencePill confidence={node.confidence} />}
+                     {node.decision && (
+                       <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
+                         node.decision === "Buy"
+                           ? "bg-emerald-500/10 text-emerald-500"
+                           : node.decision === "Maybe"
+                             ? "bg-amber-500/10 text-amber-500"
+                             : "bg-rose-500/10 text-rose-500"
+                       }`}>
+                         {node.decision}
+                       </span>
+                     )}
                      {node.signalScore && (
                        <span className="bg-slate-900/10 text-slate-700 dark:text-slate-200 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
                          Signal {node.signalScore}
@@ -490,6 +592,23 @@ export default function SectionScout({
               </div>
 
               <div className="mt-auto space-y-4 pt-6 border-t dark:border-slate-800">
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Price Bands</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Buy</p>
+                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.target_buy ?? node.entry_price}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Sale</p>
+                      <p className="text-sm font-black text-slate-900 dark:text-white">${node.expected_sale ?? node.entry_price}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-slate-400">Profit</p>
+                      <p className="text-sm font-black text-emerald-500">${node.expected_profit ?? 0}</p>
+                    </div>
+                  </div>
+                </div>
                 <div className="flex items-center justify-between">
                    <div>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic">Target Entry</p>
