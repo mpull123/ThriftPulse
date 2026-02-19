@@ -49,11 +49,13 @@ function buildPrioritizedLookFors({
   kind,
   hookBrand,
   evidence = [],
+  targetBuy,
 }: {
   title: string;
   kind: "brand" | "style";
   hookBrand?: string;
   evidence?: string[];
+  targetBuy?: number;
 }): string[] {
   const t = String(title || "").toLowerCase();
   const b = String(hookBrand || "").trim();
@@ -65,36 +67,39 @@ function buildPrioritizedLookFors({
   };
 
   if (kind === "brand") {
-    add(100, `Check brand label and era tag first (${title}).`);
-    add(95, "Check stitching quality and hardware consistency.");
-    add(90, "Inspect high-wear zones for flaws (cuffs, hems, knees, collar).");
-    add(85, "Prioritize clean condition and minimal repairs.");
+    add(100, `Authenticate ${title} labels/tags first (era, font, wash/care tags).`);
+    add(96, "Check hardware consistency: zippers, snaps, rivets, logo engravings.");
+    add(92, "Inspect high-wear zones first: cuffs, hems, knees, collar, underarms.");
+    add(88, "Prioritize clean condition over hype variants with heavy flaws.");
   } else {
-    add(100, `Confirm the core silhouette for "${title}" before anything else.`);
-    add(95, "Prioritize clean condition and low-wear fabric.");
-    add(90, "Verify high-demand materials and construction details.");
+    add(100, `Confirm "${title}" silhouette and cut first before brand hunting.`);
+    add(96, "Prioritize low-wear condition: no major stains, tears, or pilling.");
+    add(92, "Verify in-demand material and construction details.");
   }
 
   if (b) add(88, `Prioritize branded versions from ${b}.`);
 
   if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
-    add(84, "Check zipper function, lining integrity, and cuff condition.");
-    add(80, "Prioritize heavyweight fabric and clean hardware.");
+    add(86, "Check zipper track, lining integrity, and sleeve cuff wear.");
+    add(82, "Prioritize heavier fabric, intact insulation, and clean hardware.");
   }
   if (t.includes("denim") || t.includes("jean") || t.includes("double knee") || t.includes("cargo")) {
-    add(84, "Check seams, crotch, and knee wear carefully.");
-    add(80, "Prioritize strong fades/washes with no major distress.");
+    add(86, "Check inseam/crotch reinforcement, knees, and pocket edge wear.");
+    add(82, "Prioritize desirable wash/fade with minimal blowouts or repairs.");
   }
   if (t.includes("boot") || t.includes("sneaker") || t.includes("shoe")) {
-    add(84, "Inspect outsole wear, midsole aging, and heel drag.");
-    add(80, "Prioritize cleaner uppers and structurally solid pairs.");
+    add(86, "Inspect outsole wear, heel drag, and separation/glue failure.");
+    add(82, "Prioritize cleaner uppers and pairs with strong shape retention.");
   }
   if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) {
-    add(84, "Inspect cuffs, collar, and pilling or shrinkage.");
-    add(80, "Prioritize stronger fabric weight and shape retention.");
+    add(86, "Inspect cuffs/collar for stretching, pilling, and shrinkage.");
+    add(82, "Prioritize heavier fabric and clean graphics/knit structure.");
   }
   if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) {
     add(78, "Check era-specific tags and print quality for authenticity.");
+  }
+  if (Number.isFinite(Number(targetBuy)) && Number(targetBuy) > 0) {
+    add(94, `Pass if buy price is above $${toDollar(Number(targetBuy))} unless condition/tags are exceptional.`);
   }
 
   evidence
@@ -294,7 +299,12 @@ function getSignalIntel(signal: any): string {
   return parts.join(" ") || "Live trend signal from eBay + fashion source pipeline.";
 }
 
-function getBrandIntel(brandName: string, notes: string[], avgHeat: number): string {
+function getBrandIntel(
+  brandName: string,
+  notes: string[],
+  avgHeat: number,
+  extra?: { topSignals?: string[]; avgExitPrice?: number; sourceSignalCount?: number }
+): string {
   const b = String(brandName || "").trim();
   const uniqueNotes = notes.filter(Boolean).slice(0, 2);
   const base = `For ${b}, prioritize authentic era tags, hardware consistency, and low-wear condition.`;
@@ -302,7 +312,17 @@ function getBrandIntel(brandName: string, notes: string[], avgHeat: number): str
     avgHeat >= 85 ? "Demand is currently high with fast resale velocity."
     : avgHeat >= 70 ? "Demand is stable with reliable turnover."
     : "Demand is early-stage; buy only when margin is strong.";
-  return [base, ...uniqueNotes, heatLine].join(" ");
+  const topSignals = (extra?.topSignals || []).filter(Boolean).slice(0, 2).join(", ");
+  const signalLine = topSignals ? `Current winning item types: ${topSignals}.` : "";
+  const priceLine =
+    Number(extra?.avgExitPrice || 0) > 0
+      ? `Recent resale midpoint is about $${toDollar(Number(extra?.avgExitPrice || 0))}.`
+      : "";
+  const sourceLine =
+    Number(extra?.sourceSignalCount || 0) > 0
+      ? `Evidence observed across ${toDollar(Number(extra?.sourceSignalCount || 0))} source signal(s).`
+      : "";
+  return [base, ...uniqueNotes, signalLine, priceLine, sourceLine, heatLine].filter(Boolean).join(" ");
 }
 
 function isBrandSignal(signal: any): boolean {
@@ -315,17 +335,16 @@ function isBrandSignal(signal: any): boolean {
 }
 
 function toTargetBullet(item: string, kind: "brand" | "style"): string {
-  const text = String(item || "").trim();
+  const text = String(item || "").trim().replace(/\s+/g, " ");
   if (!text) return "";
-  if (/^risk check:/i.test(text)) {
-    return `${text} Prioritize authentication checks before buying.`;
+  if (/^look for cue:/i.test(text)) {
+    const cuePrefix = kind === "brand" ? "Brand cue: " : "Style cue: ";
+    return text.replace(/^look for cue:\s*/i, cuePrefix);
   }
-  if (/piece$/i.test(text)) {
-    return `${text}: prioritize the cleanest condition and strongest comp pricing.`;
-  }
-  return kind === "brand"
-    ? `${text}: verify tags, hardware, and era details before sourcing.`
-    : `${text}: compare silhouette, condition, and resale comps before adding.`;
+  if (/^risk check:/i.test(text)) return text;
+  if (/piece$/i.test(text)) return text.replace(/piece$/i, "pieces");
+  if (/[.!?]$/.test(text)) return text;
+  return `${text}.`;
 }
 
 function formatMentions(value: number): string {
@@ -643,9 +662,17 @@ export default function SectionScout({
         heatCount: 0,
         priceTotal: 0,
         priceCount: 0,
+        mentionTotal: 0,
+        sourceSignalTotal: 0,
+        ebaySampleTotal: 0,
+        googleHitTotal: 0,
+        aiHitTotal: 0,
+        discoveryHitTotal: 0,
+        topSignals: new Set<string>(),
         notes: new Set<string>(),
         what: new Set<string>(),
         latestComp: null as CompCheck | null,
+        lastUpdatedAt: null as string | null,
       });
     }
 
@@ -660,6 +687,13 @@ export default function SectionScout({
       node.priceTotal += price;
       node.priceCount += 1;
     }
+    node.mentionTotal += Number(signal?.mention_count || 0);
+    node.sourceSignalTotal += Number(signal?.source_signal_count || 0);
+    node.ebaySampleTotal += Number(signal?.ebay_sample_count || 0);
+    node.googleHitTotal += Number(signal?.google_trend_hits || 0);
+    node.aiHitTotal += Number(signal?.ai_corpus_hits || 0);
+    node.discoveryHitTotal += Number(signal?.ebay_discovery_hits || 0);
+    if (signal?.trend_name) node.topSignals.add(String(signal.trend_name).trim());
     if (signal?.market_sentiment) node.notes.add(String(signal.market_sentiment).trim());
     if (signal?.risk_factor) node.notes.add(`Risk: ${String(signal.risk_factor).trim()}`);
     if (Array.isArray(signal?.visual_cues)) {
@@ -671,11 +705,22 @@ export default function SectionScout({
     if (compCheckedAt(latestCompForSignal) > compCheckedAt(node.latestComp)) {
       node.latestComp = latestCompForSignal;
     }
+    const signalUpdatedAt = signal?.updated_at || signal?.created_at || null;
+    if (
+      signalUpdatedAt &&
+      (!node.lastUpdatedAt || new Date(signalUpdatedAt).getTime() > new Date(node.lastUpdatedAt).getTime())
+    ) {
+      node.lastUpdatedAt = signalUpdatedAt;
+    }
   }
 
   const liveBrandNodes = [...liveBrandMap.values()].map((node) => {
     const avgHeat = node.heatCount ? Math.round(node.heatTotal / node.heatCount) : 70;
-    const mentions = Math.max(10, node.what.size * 4);
+    const mentions = Math.max(
+      12,
+      Number(node.mentionTotal || 0),
+      Math.round(node.what.size * 4)
+    );
     const compConfidence = getConfidenceFromComp(node.latestComp);
     const fallbackConfidence = getBrandFallbackConfidence({
       avgHeat,
@@ -708,10 +753,12 @@ export default function SectionScout({
         mentions,
       }),
       compAgeLabel: getCompAgeLabel(node.latestComp),
-      last_updated_at: null,
-      source_counts: { ebay: 0, google: 0, ai: 0, discovery: 0 },
       collectorRunAge,
-      intel: getBrandIntel(node.name, [...node.notes], avgHeat),
+      intel: getBrandIntel(node.name, [...node.notes], avgHeat, {
+        topSignals: [...node.topSignals].slice(0, 3),
+        avgExitPrice: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 0,
+        sourceSignalCount: node.sourceSignalTotal,
+      }),
       entry_price: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
       target_buy: plan.targetBuy,
       expected_sale: plan.expectedSale,
@@ -728,7 +775,15 @@ export default function SectionScout({
         kind: "brand",
         hookBrand: node.name,
         evidence: [...node.what].filter(Boolean).slice(0, 4),
+        targetBuy: plan.targetBuy,
       }),
+      last_updated_at: node.lastUpdatedAt,
+      source_counts: {
+        ebay: Number(node.ebaySampleTotal || 0),
+        google: Number(node.googleHitTotal || 0),
+        ai: Number(node.aiHitTotal || 0),
+        discovery: Number(node.discoveryHitTotal || 0),
+      },
       signal_ids: signals
         .filter((s: any) => String(s?.hook_brand || "").trim().toLowerCase() === String(node.name || "").trim().toLowerCase())
         .map((s: any) => String(s?.id || "").trim())
@@ -825,6 +880,7 @@ export default function SectionScout({
         kind: "style",
         hookBrand: representative?.hook_brand || "",
         evidence: topTargets,
+        targetBuy: plan.targetBuy,
       }),
       brands_to_watch: inferBrandsForTrend(representative?.trend_name, representative?.hook_brand),
       brandRef: representative?.hook_brand || null,
@@ -1424,6 +1480,11 @@ export default function SectionScout({
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
                     Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
                   </p>
+                  {node.source_counts && (
+                    <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                      Sources: eBay {toDollar(node.source_counts.ebay || 0)} • Google {toDollar(node.source_counts.google || 0)} • AI {toDollar(node.source_counts.ai || 0)}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center justify-between">
                    <div>
