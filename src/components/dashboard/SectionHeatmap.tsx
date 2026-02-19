@@ -15,11 +15,13 @@ type HeatmapPresetPayload = {
   searchTerm: string;
   confidenceFilter: "all" | "high" | "med" | "low";
   sourceFilter: "all" | "brand" | "style";
+  styleTierFilter: "all" | "core" | "niche";
   sortMode: "heat" | "mentions" | "signal";
   viewMode: "compact" | "detailed";
   verifiedOnly: boolean;
   freshOnly: boolean;
   lowBuyInOnly: boolean;
+  cardLimit: 40 | 80 | 120 | 200;
 };
 type HeatmapSavedPreset = {
   id: string;
@@ -176,7 +178,9 @@ export default function SectionHeatmap({
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "brand" | "style">("all");
+  const [styleTierFilter, setStyleTierFilter] = useState<"all" | "core" | "niche">("all");
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
+  const [cardLimit, setCardLimit] = useState<40 | 80 | 120 | 200>(80);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [compareMode, setCompareMode] = useState<"profit" | "risk" | "velocity">("velocity");
   const [savedPresets, setSavedPresets] = useState<HeatmapSavedPreset[]>([]);
@@ -218,11 +222,13 @@ export default function SectionHeatmap({
     setSearchTerm(String(payload.searchTerm || ""));
     setConfidenceFilter(payload.confidenceFilter || "all");
     setSourceFilter(payload.sourceFilter || "all");
+    setStyleTierFilter(payload.styleTierFilter || "all");
     setSortMode(payload.sortMode || "signal");
     setViewMode(payload.viewMode || "detailed");
     setVerifiedOnly(Boolean(payload.verifiedOnly));
     setFreshOnly(Boolean(payload.freshOnly));
     setLowBuyInOnly(Boolean(payload.lowBuyInOnly));
+    setCardLimit(payload.cardLimit || 80);
     setCompareIds([]);
   };
 
@@ -267,6 +273,11 @@ export default function SectionHeatmap({
       confidenceReason: getConfidenceReason({ latestComp, confidence, mentions }),
       pricing,
       inferredType: String(item?.track || "").toLowerCase().includes("brand") ? "brand" : "style",
+      styleTier: String(item?.style_tier || "").toLowerCase() === "core"
+        ? "core"
+        : String(item?.style_tier || "").toLowerCase() === "niche"
+          ? "niche"
+          : "unknown",
       compStatus: !latestComp ? "none" : isCompStale(latestComp) ? "stale" : "fresh",
     };
   }), [data, compChecks]);
@@ -277,6 +288,10 @@ export default function SectionHeatmap({
     if (lowBuyInOnly && Number(item.exit_price || 0) > 90) return false;
     if (confidenceFilter !== "all" && item.confidence !== confidenceFilter) return false;
     if (sourceFilter !== "all" && item.inferredType !== sourceFilter) return false;
+    if (styleTierFilter !== "all") {
+      if (item.inferredType !== "style") return false;
+      if (item.styleTier !== styleTierFilter) return false;
+    }
     const q = searchTerm.trim().toLowerCase();
     if (q) {
       const haystack = [
@@ -292,11 +307,12 @@ export default function SectionHeatmap({
     return true;
   });
 
-  const visibleData = [...filteredData].sort((a, b) => {
+  const sortedData = [...filteredData].sort((a, b) => {
     if (sortMode === "mentions") return (b.mentions || 0) - (a.mentions || 0);
     if (sortMode === "heat") return (b.heat_score || 0) - (a.heat_score || 0);
     return (b.signalScore || 0) - (a.signalScore || 0);
   });
+  const visibleData = sortedData.slice(0, cardLimit);
 
   const noCompCount = visibleData.filter((item) => item.compStatus === "none").length;
   const hotCount = visibleData.filter((item) => (item.heat_score || 0) >= 85).length;
@@ -384,11 +400,13 @@ export default function SectionHeatmap({
       searchTerm,
       confidenceFilter,
       sourceFilter,
+      styleTierFilter,
       sortMode,
       viewMode,
       verifiedOnly,
       freshOnly,
       lowBuyInOnly,
+      cardLimit,
     };
     localStorage.setItem(HEATMAP_PRESET_STORAGE_KEY, JSON.stringify(payload));
   };
@@ -405,11 +423,13 @@ export default function SectionHeatmap({
       searchTerm,
       confidenceFilter,
       sourceFilter,
+      styleTierFilter,
       sortMode,
       viewMode,
       verifiedOnly,
       freshOnly,
       lowBuyInOnly,
+      cardLimit,
     };
     const next = [
       ...savedPresets.filter((p) => p.name.toLowerCase() !== name.toLowerCase()),
@@ -442,11 +462,13 @@ export default function SectionHeatmap({
       searchTerm: "",
       confidenceFilter: "high",
       sourceFilter: "all",
+      styleTierFilter: "all",
       sortMode: "signal",
       viewMode: "detailed",
       verifiedOnly: false,
       freshOnly: false,
       lowBuyInOnly: false,
+      cardLimit: 80,
     });
   };
 
@@ -507,6 +529,15 @@ export default function SectionHeatmap({
             <option value="style">Style</option>
             <option value="brand">Brand</option>
           </select>
+          <select
+            value={styleTierFilter}
+            onChange={(e) => setStyleTierFilter(e.target.value as "all" | "core" | "niche")}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Tiers</option>
+            <option value="core">Style Core</option>
+            <option value="niche">Style Niche</option>
+          </select>
           <button
             onClick={() => setSortMode("signal")}
             className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${sortMode === "signal" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
@@ -526,6 +557,16 @@ export default function SectionHeatmap({
           >
             <option value="detailed">Detailed</option>
             <option value="compact">Compact</option>
+          </select>
+          <select
+            value={cardLimit}
+            onChange={(e) => setCardLimit(Number(e.target.value) as 40 | 80 | 120 | 200)}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value={40}>Max 40</option>
+            <option value={80}>Max 80</option>
+            <option value={120}>Max 120</option>
+            <option value={200}>Max 200</option>
           </select>
           <button
             onClick={() => setVerifiedOnly(!verifiedOnly)}
@@ -552,7 +593,7 @@ export default function SectionHeatmap({
         </div>
       </div>
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-        Selected: {compareIds.length}/4
+        Showing {visibleData.length} of {sortedData.length} cards • Selected: {compareIds.length}/4
       </p>
       <div className="flex flex-wrap gap-2">
         <button

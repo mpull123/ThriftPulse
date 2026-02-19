@@ -127,6 +127,10 @@ export default function DashboardPage() {
     analysis: "Radar",
     sources: "Sources"
   };
+  const flowOrder = ["overview", "sources", "analysis", "scout", "hunt", "missions", "ledger"];
+  const currentFlowIndex = Math.max(0, flowOrder.indexOf(activeView));
+  const nextView = flowOrder[currentFlowIndex + 1] || null;
+  const prevView = flowOrder[currentFlowIndex - 1] || null;
 
   useEffect(() => {
     setMounted(true);
@@ -329,12 +333,12 @@ export default function DashboardPage() {
 
         <nav className="space-y-1.5 flex-1">
           <NavButton label="Overview" id="overview" icon={LayoutGrid} active={activeView} set={navigateView} color="emerald" />
+          <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={navigateView} color="emerald" />
           <NavButton label="Radar" id="analysis" icon={Activity} active={activeView} set={navigateView} color="rose" />
           <NavButton label="Decision Lab" id="scout" icon={Radar} active={activeView} set={navigateView} color="emerald" />
           <NavButton label="Store Map" id="hunt" icon={Map} active={activeView} set={navigateView} color="blue" />
           <NavButton label="Inventory" id="missions" icon={LayoutDashboard} active={activeView} set={navigateView} color="purple" />
           <NavButton label="Financials" id="ledger" icon={Wallet} active={activeView} set={navigateView} color="amber" />
-          <NavButton label="Sources" id="sources" icon={Hash} active={activeView} set={navigateView} color="emerald" />
         </nav>
 
         <div className="pt-8 mt-auto border-t dark:border-slate-800 space-y-4">
@@ -362,23 +366,39 @@ export default function DashboardPage() {
               Refresh Data
             </button>
             <button
-              onClick={() => navigateView("scout")}
+              onClick={() => navigateView("sources")}
               className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-500 border border-blue-500/30 hover:bg-blue-500/20 transition-colors"
             >
-              Open Decision Lab
-            </button>
-            <button
-              onClick={() => navigateView("hunt")}
-              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-600 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
-            >
-              Open Store Map
+              Open Sources
             </button>
             <button
               onClick={() => navigateView("analysis")}
-              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-500 border border-rose-500/30 hover:bg-rose-500/20 transition-colors"
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-amber-500/10 text-amber-600 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
             >
               Open Radar
             </button>
+            <button
+              onClick={() => navigateView("scout")}
+              className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-500 border border-rose-500/30 hover:bg-rose-500/20 transition-colors"
+            >
+              Open Decision Lab
+            </button>
+            {prevView && (
+              <button
+                onClick={() => navigateView(prevView)}
+                className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300/50 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              >
+                Previous: {viewLabels[prevView]}
+              </button>
+            )}
+            {nextView && (
+              <button
+                onClick={() => navigateView(nextView)}
+                className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-600 border border-emerald-500/30 hover:bg-emerald-500/20 transition-colors"
+              >
+                Next: {viewLabels[nextView]}
+              </button>
+            )}
             <div className="ml-auto flex flex-wrap gap-2">
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                 Radar: {radarSignals.length}

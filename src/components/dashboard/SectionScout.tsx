@@ -16,9 +16,11 @@ type ScoutPresetPayload = {
   searchTerm: string;
   confidenceFilter: "all" | "high" | "med" | "low";
   decisionFilter: "all" | "Buy" | "Maybe" | "Skip" | "Watchlist";
+  styleTierFilter: "all" | "core" | "niche";
   sortMode: "heat" | "mentions" | "profit";
   viewMode: "compact" | "detailed";
   lowBuyInOnly: boolean;
+  maxCardsPerSection: 20 | 40 | 80 | 120;
 };
 type ScoutSavedPreset = {
   id: string;
@@ -516,9 +518,11 @@ export default function SectionScout({
   const [searchTerm, setSearchTerm] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high" | "med" | "low">("all");
   const [decisionFilter, setDecisionFilter] = useState<"all" | "Buy" | "Maybe" | "Skip" | "Watchlist">("all");
+  const [styleTierFilter, setStyleTierFilter] = useState<"all" | "core" | "niche">("all");
   const [sortMode, setSortMode] = useState<"heat" | "mentions" | "profit">("heat");
   const [viewMode, setViewMode] = useState<"compact" | "detailed">("detailed");
   const [lowBuyInOnly, setLowBuyInOnly] = useState(false);
+  const [maxCardsPerSection, setMaxCardsPerSection] = useState<20 | 40 | 80 | 120>(40);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareMode, setCompareMode] = useState<"profit" | "risk" | "velocity">("profit");
@@ -562,9 +566,11 @@ export default function SectionScout({
     setSearchTerm(String(payload.searchTerm || ""));
     setConfidenceFilter(payload.confidenceFilter || "all");
     setDecisionFilter(payload.decisionFilter || "all");
+    setStyleTierFilter(payload.styleTierFilter || "all");
     setSortMode(payload.sortMode || "heat");
     setViewMode(payload.viewMode || "detailed");
     setLowBuyInOnly(Boolean(payload.lowBuyInOnly));
+    setMaxCardsPerSection(payload.maxCardsPerSection || 40);
     setCompareIds([]);
     setSelectedIds([]);
   };
@@ -822,6 +828,11 @@ export default function SectionScout({
       }),
       brands_to_watch: inferBrandsForTrend(representative?.trend_name, representative?.hook_brand),
       brandRef: representative?.hook_brand || null,
+      style_tier: String(representative?.style_tier || "").toLowerCase() === "core"
+        ? "core"
+        : String(representative?.style_tier || "").toLowerCase() === "niche"
+          ? "niche"
+          : "unknown",
       compAgeLabel: getCompAgeLabel(latestComp),
       confidence,
       confidence_reason: getConfidenceReason({ latestComp, confidence, mentions }),
@@ -854,6 +865,7 @@ export default function SectionScout({
     if (confidenceFilter !== "all" && node?.confidence !== confidenceFilter) return false;
     if (decisionFilter !== "all" && node?.decision !== decisionFilter) return false;
     if (lowBuyInOnly && Number(node?.target_buy || 0) > 35) return false;
+    if (styleTierFilter !== "all" && node?.type === "style" && node?.style_tier !== styleTierFilter) return false;
 
     const q = searchTerm.trim().toLowerCase();
     if (!q) return true;
@@ -875,14 +887,24 @@ export default function SectionScout({
     return Number(b?.heat || 0) - Number(a?.heat || 0);
   };
 
-  const visibleBrandNodes = useMemo(
+  const filteredBrandNodes = useMemo(
     () => [...brandNodes].filter(matchesCommonFilters).sort(sortNodes),
-    [brandNodes, confidenceFilter, decisionFilter, searchTerm, sortMode]
+    [brandNodes, confidenceFilter, decisionFilter, searchTerm, sortMode, lowBuyInOnly]
+  );
+
+  const filteredTrendNodes = useMemo(
+    () => [...trendNodes].filter(matchesCommonFilters).sort(sortNodes),
+    [trendNodes, confidenceFilter, decisionFilter, searchTerm, sortMode, styleTierFilter, lowBuyInOnly]
+  );
+
+  const visibleBrandNodes = useMemo(
+    () => filteredBrandNodes.slice(0, maxCardsPerSection),
+    [filteredBrandNodes, maxCardsPerSection]
   );
 
   const visibleTrendNodes = useMemo(
-    () => [...trendNodes].filter(matchesCommonFilters).sort(sortNodes),
-    [trendNodes, confidenceFilter, decisionFilter, searchTerm, sortMode]
+    () => filteredTrendNodes.slice(0, maxCardsPerSection),
+    [filteredTrendNodes, maxCardsPerSection]
   );
 
   const comparePool = useMemo(
@@ -1038,9 +1060,11 @@ export default function SectionScout({
       searchTerm,
       confidenceFilter,
       decisionFilter,
+      styleTierFilter,
       sortMode,
       viewMode,
       lowBuyInOnly,
+      maxCardsPerSection,
     };
     localStorage.setItem(SCOUT_PRESET_STORAGE_KEY, JSON.stringify(payload));
   };
@@ -1057,9 +1081,11 @@ export default function SectionScout({
       searchTerm,
       confidenceFilter,
       decisionFilter,
+      styleTierFilter,
       sortMode,
       viewMode,
       lowBuyInOnly,
+      maxCardsPerSection,
     };
     const next = [
       ...savedPresets.filter((p) => p.name.toLowerCase() !== name.toLowerCase()),
@@ -1092,9 +1118,11 @@ export default function SectionScout({
       searchTerm: "",
       confidenceFilter: "high",
       decisionFilter: "all",
+      styleTierFilter: "all",
       sortMode: "heat",
       viewMode: "detailed",
       lowBuyInOnly: false,
+      maxCardsPerSection: 40,
     });
   };
 
@@ -1110,7 +1138,7 @@ export default function SectionScout({
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
           Research Filters
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-3">
           <input
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -1139,6 +1167,15 @@ export default function SectionScout({
             <option value="Skip">Skip</option>
           </select>
           <select
+            value={styleTierFilter}
+            onChange={(e) => setStyleTierFilter(e.target.value as "all" | "core" | "niche")}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value="all">All Tiers</option>
+            <option value="core">Style Core</option>
+            <option value="niche">Style Niche</option>
+          </select>
+          <select
             value={sortMode}
             onChange={(e) => setSortMode(e.target.value as "heat" | "mentions" | "profit")}
             className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
@@ -1155,9 +1192,19 @@ export default function SectionScout({
             <option value="detailed">View: Detailed</option>
             <option value="compact">View: Compact</option>
           </select>
+          <select
+            value={maxCardsPerSection}
+            onChange={(e) => setMaxCardsPerSection(Number(e.target.value) as 20 | 40 | 80 | 120)}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+          >
+            <option value={20}>Max 20/Section</option>
+            <option value={40}>Max 40/Section</option>
+            <option value={80}>Max 80/Section</option>
+            <option value={120}>Max 120/Section</option>
+          </select>
         </div>
         <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
-          Showing {visibleBrandNodes.length} brand nodes and {visibleTrendNodes.length} style trends
+          Showing {visibleBrandNodes.length}/{filteredBrandNodes.length} brand nodes and {visibleTrendNodes.length}/{filteredTrendNodes.length} style trends
         </p>
         <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
           Selected nodes: {selectedIds.length} • Compare selected: {compareIds.length}/4
