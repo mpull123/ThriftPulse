@@ -307,6 +307,7 @@ export default function DashboardPage() {
   const hotSignalCount = realSignals.filter((s) => Number(s?.heat_score || 0) >= 85).length;
   const decisionLabSignals = realSignals.filter((s: any) => String(s?.pipeline_stage || "radar").toLowerCase() === "decision");
   const radarSignals = realSignals.filter((s: any) => String(s?.pipeline_stage || "radar").toLowerCase() === "radar");
+  const activeSignals = realSignals.filter((s: any) => String(s?.pipeline_stage || "radar").toLowerCase() !== "archived");
   const healthyCollectorRuns = realCollectorJobs.filter((j) => {
     const status = String(j?.status || "").toLowerCase();
     return status === "success" || status === "completed" || status === "ok";
@@ -473,7 +474,7 @@ export default function DashboardPage() {
           {/* HEATMAP: Now receives real Reddit Trends */}
           {activeView === "analysis" && (
             <SectionHeatmap
-              signals={radarSignals}
+              signals={activeSignals}
               compChecks={realCompChecks}
               onAddTrend={addToTrunk}
               onTrendClick={(_, signalId) => {
