@@ -1355,6 +1355,19 @@ async function syncMarketPulse() {
           rejection_reason: trendVerdict.reason,
           metadata: { stage: 'update_gate', signal_id: signal.id },
         }]);
+        try {
+          await supabase
+            .from('market_signals')
+            .update({
+              pipeline_stage: 'archived',
+              archived_at: new Date().toISOString(),
+              stage_updated_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', signal.id);
+        } catch (_err) {
+          // Stage columns may not exist in every environment; ignore hard-fail.
+        }
         console.log(`⏭️ Skipping non-structured trend row: ${signal.trend_name} (${trendVerdict.reason})`);
         continue;
       }
