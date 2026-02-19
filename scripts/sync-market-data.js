@@ -379,6 +379,45 @@ function extractTermsFromTrendTitle(title) {
   return [...new Set(combined)];
 }
 
+function extractFashionEntityTermsFromTitle(title) {
+  const cleaned = decodeXmlEntities(String(title || '')).toLowerCase();
+  if (!cleaned) return [];
+
+  const nouns = [
+    'jacket', 'coat', 'hoodie', 'sweatshirt', 'sweater', 'cardigan', 'tee',
+    't-shirt', 'shirt', 'pants', 'jeans', 'trousers', 'skirt', 'dress',
+    'boot', 'boots', 'sneaker', 'sneakers', 'loafer', 'loafers', 'bag', 'vest', 'parka', 'anorak'
+  ];
+  const qualifiers = [
+    'vintage', 'oversized', 'cropped', 'wide-leg', 'high-waisted', 'double knee', 'cargo',
+    'graphic', 'leather', 'suede', 'wool', 'mohair', 'denim', 'selvedge', 'chunky', 'platform',
+    'chelsea', 'tabi', 'retro', 'boxy', 'distressed', 'washed', 'faded', 'tailored', 'raw',
+    'ripstop', 'nylon', 'corduroy', 'cashmere', 'knit', 'quilted', 'puffer', 'barn', 'moto', 'trench'
+  ];
+  const brands = [
+    "arc'teryx", 'arcteryx', 'carhartt', 'salomon', 'nike', 'adidas', 'new balance',
+    'patagonia', 'north face', 'levis', 'levi', 'wrangler', 'dickies', 'coach',
+    'gucci', 'prada', 'bottega', 'margiela'
+  ];
+
+  const hits = new Set();
+  const has = (phrase) => cleaned.includes(phrase);
+  for (const noun of nouns) {
+    if (!has(noun)) continue;
+    for (const q of qualifiers) {
+      if (has(q)) hits.add(normalizeTrendTerm(`${q} ${noun}`));
+    }
+    for (const b of brands) {
+      if (has(b)) hits.add(normalizeTrendTerm(`${b} ${noun}`));
+    }
+  }
+
+  return [...hits]
+    .map((v) => compactWhitespace(v))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function isFashionTerm(term) {
   const t = term.toLowerCase();
   const keywords = [
@@ -501,6 +540,9 @@ function evaluateTrendTerm(term) {
   if (cleaned.length < 4) return { ok: false, reason: 'too_short' };
   if (cleaned.length > 60) return { ok: false, reason: 'too_long' };
   if (isEditorialNoiseTerm(cleaned)) return { ok: false, reason: 'editorial_noise' };
+  if (/\b(from|to|for|with|and|or|vs)\b/i.test(cleaned) && cleaned.split(/\s+/).length >= 4) {
+    return { ok: false, reason: 'headline_phrase' };
+  }
   if (cleaned.split(/\s+/).length > 6) return { ok: false, reason: 'too_many_words' };
   if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion' };
   if (!isFashionTerm(cleaned)) return { ok: false, reason: 'no_fashion_keyword' };
@@ -723,7 +765,17 @@ async function fetchFashionRssTerms() {
   const filteredTerms = [];
   const rejectionRows = [];
   for (const title of headlines) {
-    for (const term of extractTermsFromTrendTitle(title)) {
+    const entityTerms = extractFashionEntityTermsFromTitle(title);
+    if (!entityTerms.length) {
+      rejectionRows.push({
+        collector_source: 'fashion_rss',
+        raw_title: title,
+        candidate_term: title,
+        rejection_reason: 'no_entity_extracted',
+        metadata: { stage: 'entity_extract' },
+      });
+    }
+    for (const term of entityTerms) {
       rawTerms.push(term);
       if (isFashionTerm(term)) filteredTerms.push(term);
       const verdict = evaluateTrendTerm(term);
@@ -772,7 +824,17 @@ async function fetchGoogleNewsRssTerms() {
   const filteredTerms = [];
   const rejectionRows = [];
   for (const title of headlines) {
-    for (const term of extractTermsFromTrendTitle(title)) {
+    const entityTerms = extractFashionEntityTermsFromTitle(title);
+    if (!entityTerms.length) {
+      rejectionRows.push({
+        collector_source: 'google_news_rss',
+        raw_title: title,
+        candidate_term: title,
+        rejection_reason: 'no_entity_extracted',
+        metadata: { stage: 'entity_extract' },
+      });
+    }
+    for (const term of entityTerms) {
       rawTerms.push(term);
       if (isFashionTerm(term)) filteredTerms.push(term);
       const verdict = evaluateTrendTerm(term);
