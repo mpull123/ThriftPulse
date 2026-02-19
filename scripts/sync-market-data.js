@@ -199,6 +199,8 @@ async function writeCompCheck({
 
 function decodeXmlEntities(text) {
   return text
+    .replace(/<!\[cdata\[/gi, '')
+    .replace(/\]\]>/g, '')
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
@@ -426,6 +428,17 @@ function isSpecificFashionTerm(term) {
   return specificity >= 2;
 }
 
+function hasStructuredFashionPattern(term) {
+  const t = String(term || '').toLowerCase();
+  const apparelNounPattern = /\b(jacket|coat|hoodie|sweatshirt|sweater|cardigan|tee|t-shirt|shirt|pants|jeans|trousers|skirt|dress|boots?|sneakers?|loafers?|bag|vest|parka|anorak)\b/;
+  const qualifierPattern = /\b(vintage|oversized|cropped|wide-leg|high-waisted|double knee|cargo|graphic|leather|suede|wool|mohair|denim|selvedge|chunky|platform|chelsea|tabi|retro|boxy|distressed|washed|faded|tailored|raw|ripstop|nylon|corduroy|cashmere|knit|quilted|puffer|barn|moto|trench|track|parachute)\b/;
+  const brandPattern = /\b(arc'?teryx|arcteryx|carhartt|salomon|nike|adidas|new balance|patagonia|north face|levis?|wrangler|dickies|coach|gucci|prada|bottega|margiela)\b/;
+  const hasNoun = apparelNounPattern.test(t);
+  const hasQualifier = qualifierPattern.test(t);
+  const hasBrand = brandPattern.test(t);
+  return (hasNoun && hasQualifier) || (hasNoun && hasBrand);
+}
+
 function isEditorialNoiseTerm(term) {
   const t = String(term || '').toLowerCase();
   const blockedPhrases = [
@@ -447,9 +460,27 @@ function isEditorialNoiseTerm(term) {
     'interview',
     'runway show',
     'red carpet',
-    'met gala'
+    'met gala',
+    'best ',
+    ' top ',
+    'trends',
+    ' trend',
+    'guide',
+    'gift',
+    'gifting',
+    'collaboration',
+    'collab',
+    'look to',
+    'lookbook',
+    'must-have',
+    'must have',
+    'spring 20',
+    'summer 20',
+    'fall 20',
+    'winter 20'
   ];
   if (blockedPhrases.some((p) => t.includes(p))) return true;
+  if (/\b20\d{2}\b/.test(t)) return true;
   if (/[?!:]/.test(t) && t.split(/\s+/).length > 5) return true;
   return false;
 }
@@ -474,6 +505,7 @@ function evaluateTrendTerm(term) {
   if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion' };
   if (!isFashionTerm(cleaned)) return { ok: false, reason: 'no_fashion_keyword' };
   if (!isSpecificFashionTerm(cleaned)) return { ok: false, reason: 'not_specific_enough' };
+  if (!hasStructuredFashionPattern(cleaned)) return { ok: false, reason: 'not_structured_entity' };
   return { ok: true, reason: 'accepted' };
 }
 
@@ -979,6 +1011,17 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
   let created = 0;
   for (const term of newTerms) {
     try {
+      const termVerdict = evaluateTrendTerm(term);
+      if (!termVerdict.ok) {
+        await writeTrendRejectionLogs([{
+          collector_source: 'seed_merge',
+          raw_title: term,
+          candidate_term: term,
+          rejection_reason: termVerdict.reason,
+          metadata: { stage: 'seed_discovery_gate' },
+        }]);
+        continue;
+      }
       const key = String(term || '').toLowerCase().trim();
       const fashionRssHit = Boolean(sourceSets?.fashionRssSet?.has(key));
       const googleNewsHit = Boolean(sourceSets?.googleNewsSet?.has(key));
@@ -993,7 +1036,14 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
         (discoveryHit ? 1 : 0);
 
       const { avgPrice, sampleCount } = await fetchEbayStats(term, 60);
-      if (sampleCount < 3 || (sampleCount < 6 && nonEbaySignalCount === 0)) {
+      if (sampleCount < 3 || (sampleCount < 8 && nonEbaySignalCount < 2)) {
+        await writeTrendRejectionLogs([{
+          collector_source: 'seed_merge',
+          raw_title: term,
+          candidate_term: term,
+          rejection_reason: 'weak_evidence_threshold',
+          metadata: { stage: 'seed_discovery_gate', ebay_sample_count: sampleCount, non_ebay_signal_count: nonEbaySignalCount },
+        }]);
         console.log(`⏭️ Skipping low-signal discovery: ${term} (eBay sample ${sampleCount}, source hints ${nonEbaySignalCount})`);
         continue;
       }
@@ -1234,6 +1284,18 @@ async function syncMarketPulse() {
 
     for (const signal of signals) {
       console.log(`🔍 Syncing: ${signal.trend_name}`);
+      const trendVerdict = evaluateTrendTerm(signal.trend_name);
+      if (!trendVerdict.ok) {
+        await writeTrendRejectionLogs([{
+          collector_source: 'market_signal_update',
+          raw_title: signal.trend_name,
+          candidate_term: signal.trend_name,
+          rejection_reason: trendVerdict.reason,
+          metadata: { stage: 'update_gate', signal_id: signal.id },
+        }]);
+        console.log(`⏭️ Skipping non-structured trend row: ${signal.trend_name} (${trendVerdict.reason})`);
+        continue;
+      }
 
       let avgPrice = safeNumber(signal.exit_price, 0);
       let sampleCount = 0;
@@ -1287,6 +1349,17 @@ async function syncMarketPulse() {
         ebaySampleCount: sampleCount,
         sourceSignalCount,
       });
+      if (sampleCount < 5 && sourceSignalCount < 3) {
+        await writeTrendRejectionLogs([{
+          collector_source: 'market_signal_update',
+          raw_title: signal.trend_name,
+          candidate_term: signal.trend_name,
+          rejection_reason: 'weak_update_evidence',
+          metadata: { stage: 'update_gate', signal_id: signal.id, ebay_sample_count: sampleCount, source_signal_count: sourceSignalCount },
+        }]);
+        console.log(`⏭️ Skipping weak update evidence: ${signal.trend_name} (sample=${sampleCount}, sources=${sourceSignalCount})`);
+        continue;
+      }
 
       // 2. UPDATE SUPABASE
       const { error: upError } = await supabase
