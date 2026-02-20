@@ -561,7 +561,7 @@ function getConfidenceExplainability({
   }
 
   points.push(`Source diversity: ${sourceTypes} active source${sourceTypes === 1 ? "" : "s"}.`);
-  points.push(`Mentions signal: ${formatMentions(mentions)} tracked mentions.`);
+  points.push(`Evidence count: ${formatMentions(mentions)} matched signal points.`);
   return points;
 }
 
@@ -1532,7 +1532,7 @@ export default function SectionScout({
             className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
           >
             <option value="heat">Sort: Heat</option>
-            <option value="mentions">Sort: Mentions</option>
+            <option value="mentions">Sort: Evidence</option>
             <option value="profit">Sort: Profit</option>
           </select>
           <select
@@ -1666,7 +1666,13 @@ export default function SectionScout({
                 {[
                   { key: "confidence", label: "Confidence", higher: true, value: (n: any) => confidenceToScore(n.confidence), format: (n: any) => String(n.confidence || "low").toUpperCase() },
                   { key: "heat", label: "Heat", higher: true, value: (n: any) => Number(n.heat || 0), format: (n: any) => `${Number(n.heat || 0)}` },
-                  { key: "mentions", label: "Mentions", higher: true, value: (n: any) => Number(n.mentions || 0), format: (n: any) => formatMentions(n.mentions || 0) },
+                  {
+                    key: "mentions",
+                    label: "eBay Comps",
+                    higher: true,
+                    value: (n: any) => Number(n?.source_counts?.ebay || 0),
+                    format: (n: any) => `${toDollar(Number(n?.source_counts?.ebay || 0))}`,
+                  },
                   { key: "buy", label: "Target Buy", higher: false, value: (n: any) => Number(n.target_buy || 0), format: (n: any) => formatUsd(n.target_buy || 0) },
                   { key: "net", label: "Expected Net", higher: true, value: (n: any) => Number(n.expected_profit || 0), format: (n: any) => formatUsd(n.expected_profit || 0) },
                 ].map((row) => {
@@ -1734,8 +1740,8 @@ export default function SectionScout({
                   <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>
-                  <p className="text-lg font-black italic text-emerald-500 leading-none tabular-nums">{formatMentions(node.mentions)}</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">eBay comps</p>
+                  <p className="text-lg font-black italic text-emerald-500 leading-none tabular-nums">{toDollar(Number(node?.source_counts?.ebay || 0))}</p>
                 </div>
               </div>
               {viewMode === "detailed" && (
@@ -1888,8 +1894,8 @@ export default function SectionScout({
                   <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Mentions</p>
-                  <p className="text-lg font-black italic text-blue-500 leading-none tabular-nums">{formatMentions(node.mentions)}</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">eBay comps</p>
+                  <p className="text-lg font-black italic text-blue-500 leading-none tabular-nums">{toDollar(Number(node?.source_counts?.ebay || 0))}</p>
                 </div>
               </div>
               

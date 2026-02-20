@@ -1173,14 +1173,17 @@ function calculateMentionCount({
   discoveryHit,
   compSampleSize = 0
 }) {
-  const ebay = safeNumber(ebaySampleCount, 0);
-  const fashionRss = fashionRssHit ? 9 : 0;
-  const googleNews = googleNewsHit ? 9 : 0;
-  const google = googleTrendHit ? 10 : 0;
-  const corpus = corpusHit ? 7 : 0;
-  const discovery = discoveryHit ? 5 : 0;
-  const comp = Math.min(20, safeNumber(compSampleSize, 0) * 2);
-  return Math.max(0, Math.round(ebay + fashionRss + googleNews + google + corpus + discovery + comp));
+  // Keep this as an evidence count (not weighted "popularity points"):
+  // eBay sold sample count + distinct non-eBay signal hits.
+  const ebay = Math.max(0, Math.round(safeNumber(ebaySampleCount, 0)));
+  const nonEbaySignals =
+    (fashionRssHit ? 1 : 0) +
+    (googleNewsHit ? 1 : 0) +
+    (googleTrendHit ? 1 : 0) +
+    (corpusHit ? 1 : 0) +
+    (discoveryHit ? 1 : 0);
+  const compBoost = safeNumber(compSampleSize, 0) >= 10 ? 1 : 0;
+  return ebay + nonEbaySignals + compBoost;
 }
 
 function calculateSignalScore({
