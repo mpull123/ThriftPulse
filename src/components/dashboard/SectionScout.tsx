@@ -59,6 +59,8 @@ function buildPrioritizedLookFors({
 }): string[] {
   const t = String(title || "").toLowerCase();
   const b = String(hookBrand || "").trim();
+  const focus = inferProductFocus([title, ...evidence].join(" "));
+  const [focusTop, focusSecond] = getFocusChecks(focus);
   const ranked: Array<{ priority: number; text: string }> = [];
   const add = (priority: number, text: string) => {
     const clean = String(text || "").trim();
@@ -68,16 +70,20 @@ function buildPrioritizedLookFors({
 
   if (kind === "brand") {
     add(100, `Authenticate ${title} labels/tags first (era, font, wash/care tags).`);
+    add(98, focusTop);
     add(96, "Check hardware consistency: zippers, snaps, rivets, logo engravings.");
+    add(94, focusSecond);
     add(92, "Inspect high-wear zones first: cuffs, hems, knees, collar, underarms.");
     add(88, "Prioritize clean condition over hype variants with heavy flaws.");
   } else {
     add(100, `Confirm "${title}" silhouette and cut first before brand hunting.`);
+    add(98, focusTop);
     add(96, "Prioritize low-wear condition: no major stains, tears, or pilling.");
     add(92, "Verify in-demand material and construction details.");
+    add(90, focusSecond);
   }
 
-  if (b) add(88, `Prioritize branded versions from ${b}.`);
+  if (b && kind !== "brand") add(88, `Prioritize stronger resale variants from ${b}.`);
 
   if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
     add(86, "Check zipper track, lining integrity, and sleeve cuff wear.");
@@ -129,6 +135,43 @@ function inferTrendAngle(trendName: string): string {
   if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) return "Layering pieces are performing in current sell-through.";
   if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) return "Vintage-driven demand remains resilient.";
   return "Cross-category fashion interest is measurable.";
+}
+
+function inferProductFocus(text: string): "outerwear" | "footwear" | "bottoms" | "knitwear" | "bags" | "mixed" {
+  const t = String(text || "").toLowerCase();
+  if (/(jacket|coat|anorak|parka|shell|fleece|windbreaker)/.test(t)) return "outerwear";
+  if (/(boot|sneaker|shoe|loafer)/.test(t)) return "footwear";
+  if (/(jean|denim|cargo|pants|trouser|skirt|shorts)/.test(t)) return "bottoms";
+  if (/(hoodie|sweatshirt|sweater|cardigan|knit)/.test(t)) return "knitwear";
+  if (/(bag|tote|backpack|crossbody|handbag)/.test(t)) return "bags";
+  return "mixed";
+}
+
+function getFocusChecks(focus: ReturnType<typeof inferProductFocus>): string[] {
+  if (focus === "outerwear") return [
+    "Prioritize shell/lining integrity, zipper track condition, and cuff wear.",
+    "Favor technical fabrics, intact insulation, and complete hardware."
+  ];
+  if (focus === "footwear") return [
+    "Prioritize outsole wear, heel drag, and upper structure before cosmetics.",
+    "Favor pairs with clean midsoles and minimal separation."
+  ];
+  if (focus === "bottoms") return [
+    "Prioritize inseam/crotch reinforcement, knee wear, and pocket edge wear.",
+    "Favor clean waistbands and strong fabric with limited repairs."
+  ];
+  if (focus === "knitwear") return [
+    "Prioritize cuff/collar shape retention, pilling level, and shrinkage signs.",
+    "Favor heavier fabric weight and cleaner knit/graphic condition."
+  ];
+  if (focus === "bags") return [
+    "Prioritize strap anchors, corner wear, and zipper/hardware function.",
+    "Favor clean lining and minimal edge cracking."
+  ];
+  return [
+    "Prioritize construction quality and clean condition first.",
+    "Favor pieces with the clearest resale comps and lowest defect risk."
+  ];
 }
 
 function inferBrandsForTrend(trendName: string, hookBrand?: string): string[] {
@@ -306,7 +349,16 @@ function getBrandIntel(
   extra?: { topSignals?: string[]; avgExitPrice?: number; sourceSignalCount?: number }
 ): string {
   const b = String(brandName || "").trim();
-  const uniqueNotes = notes.filter(Boolean).slice(0, 2);
+  const uniqueNotes = notes
+    .filter((n) => {
+      const t = String(n || "").toLowerCase();
+      if (!t.trim()) return false;
+      if (t.includes("ai + ebay validated trend candidate")) return false;
+      return true;
+    })
+    .slice(0, 2);
+  const focus = inferProductFocus([b, ...(extra?.topSignals || [])].join(" "));
+  const [focusTop] = getFocusChecks(focus);
   const base = `For ${b}, prioritize authentic era tags, hardware consistency, and low-wear condition.`;
   const heatLine =
     avgHeat >= 85 ? "Demand is currently high with fast resale velocity."
@@ -322,7 +374,7 @@ function getBrandIntel(
     Number(extra?.sourceSignalCount || 0) > 0
       ? `Evidence observed across ${toDollar(Number(extra?.sourceSignalCount || 0))} source signal(s).`
       : "";
-  return [base, ...uniqueNotes, signalLine, priceLine, sourceLine, heatLine].filter(Boolean).join(" ");
+  return [base, focusTop, ...uniqueNotes, signalLine, priceLine, sourceLine, heatLine].filter(Boolean).join(" ");
 }
 
 function isBrandSignal(signal: any): boolean {
@@ -360,6 +412,19 @@ function toDollar(value: number): number {
 
 function formatUsd(value: number): string {
   return `$${toDollar(value)}`;
+}
+
+function formatSourceEvidence(sourceCounts: any): string {
+  const ebay = Number(sourceCounts?.ebay || 0);
+  const google = Number(sourceCounts?.google || 0);
+  const ai = Number(sourceCounts?.ai || 0);
+  const discovery = Number(sourceCounts?.discovery || 0);
+  const parts: string[] = [];
+  if (ebay > 0) parts.push(`eBay ${toDollar(ebay)}`);
+  if (google > 0) parts.push(`Google ${toDollar(google)}`);
+  if (ai > 0) parts.push(`AI ${toDollar(ai)}`);
+  if (discovery > 0) parts.push(`Discovery ${toDollar(discovery)}`);
+  return parts.length ? `Sources: ${parts.join(" • ")}` : "Sources: No per-source evidence logged";
 }
 
 function formatDateLabel(value: string | null | undefined): string {
@@ -1482,7 +1547,7 @@ export default function SectionScout({
                   </p>
                   {node.source_counts && (
                     <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                      Sources: eBay {toDollar(node.source_counts.ebay || 0)} • Google {toDollar(node.source_counts.google || 0)} • AI {toDollar(node.source_counts.ai || 0)}
+                      {formatSourceEvidence(node.source_counts)}
                     </p>
                   )}
                 </div>
@@ -1660,7 +1725,7 @@ export default function SectionScout({
                     {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
                   </p>
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                    Sources: eBay {node.source_counts?.ebay ?? 0} • Google {node.source_counts?.google ?? 0} • AI {node.source_counts?.ai ?? 0}
+                    {formatSourceEvidence(node.source_counts)}
                   </p>
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
                     Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
