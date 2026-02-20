@@ -174,42 +174,51 @@ function getFocusChecks(focus: ReturnType<typeof inferProductFocus>): string[] {
   ];
 }
 
-function inferBrandsForTrend(trendName: string, hookBrand?: string): string[] {
-  const t = String(trendName || "").toLowerCase();
+const TREND_BRAND_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
+  { label: "Arc'teryx", pattern: /\barc['’]?teryx|arcteryx\b/i },
+  { label: "Levi's", pattern: /\blevi['’]?s?\b/i },
+  { label: "The North Face", pattern: /\bnorth\s+face\b/i },
+  { label: "New Balance", pattern: /\bnew\s+balance\b/i },
+  { label: "Dr. Martens", pattern: /\bdr\.?\s*martens|doc\s+martens\b/i },
+  { label: "Bottega Veneta", pattern: /\bbottega(\s+veneta)?\b/i },
+  { label: "Forever 21", pattern: /\bforever\s*21\b/i },
+  { label: "Maison Margiela", pattern: /\bmaison\s+margiela|margiela\b/i },
+  { label: "Ralph Lauren", pattern: /\bralph\s+lauren\b/i },
+  { label: "Tommy Hilfiger", pattern: /\btommy\s+hilfiger\b/i },
+  { label: "Carhartt", pattern: /\bcarhartt\b/i },
+  { label: "Patagonia", pattern: /\bpatagonia\b/i },
+  { label: "Salomon", pattern: /\bsalomon\b/i },
+  { label: "Adidas", pattern: /\badidas\b/i },
+  { label: "Nike", pattern: /\bnike\b/i },
+  { label: "Reebok", pattern: /\breebok\b/i },
+  { label: "ASICS", pattern: /\basics|asics\b/i },
+  { label: "Puma", pattern: /\bpuma\b/i },
+  { label: "Vans", pattern: /\bvans\b/i },
+  { label: "Timberland", pattern: /\btimberland\b/i }
+];
+
+function detectBrandsInText(text: string): string[] {
+  const t = String(text || "");
+  return TREND_BRAND_PATTERNS.filter((entry) => entry.pattern.test(t)).map((entry) => entry.label);
+}
+
+function inferBrandsForTrend(
+  trendName: string,
+  hookBrand?: string,
+  signalBrandHints: string[] = [],
+  focusBrandHints: string[] = []
+): string[] {
   const brands = new Set<string>();
-  const hooked = String(hookBrand || "").trim();
-  if (hooked) brands.add(hooked);
+  const add = (list: string[]) =>
+    list
+      .map((v) => String(v || "").trim())
+      .filter(Boolean)
+      .forEach((v) => brands.add(v));
 
-  const add = (list: string[]) => list.forEach((b) => brands.add(b));
-
-  if (t.includes("denim") || t.includes("jean") || t.includes("double knee")) {
-    add(["Levi's", "Carhartt", "Wrangler", "Dickies", "Lee"]);
-  }
-  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
-    add(["Carhartt", "Patagonia", "Arc'teryx", "The North Face", "Columbia"]);
-  }
-  if (t.includes("boot")) {
-    add(["Dr. Martens", "Red Wing", "Timberland", "Blundstone", "Danner"]);
-  }
-  if (t.includes("sneaker") || t.includes("xt-6") || t.includes("shoe")) {
-    add(["Salomon", "Nike", "New Balance", "ASICS", "adidas"]);
-  }
-  if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("graphic")) {
-    add(["Russell Athletic", "Champion", "Carhartt", "Nike", "Hanes"]);
-  }
-  if (t.includes("cardigan") || t.includes("mohair") || t.includes("knit") || t.includes("sweater")) {
-    add(["Our Legacy", "J.Crew", "Ralph Lauren", "Pendleton", "Acne Studios"]);
-  }
-  if (t.includes("tabi")) {
-    add(["Maison Margiela", "Camper", "Vibram", "Repetto", "MIISTA"]);
-  }
-  if (t.includes("vintage") || t.includes("90s") || t.includes("y2k")) {
-    add(["Levi's", "Carhartt", "Ralph Lauren", "Tommy Hilfiger", "Nike"]);
-  }
-
-  if (brands.size === 0) {
-    add(["Levi's", "Carhartt", "Nike", "Ralph Lauren", "The North Face"]);
-  }
+  add([String(hookBrand || "")]);
+  add(detectBrandsInText(trendName));
+  add(signalBrandHints);
+  add(focusBrandHints);
 
   return [...brands].slice(0, 5);
 }
@@ -941,6 +950,24 @@ export default function SectionScout({
       dedupedTrendGroups.set(key, existing);
     });
 
+  const focusBrandPool = new Map<string, string[]>();
+  const focusBrandCounts = new Map<string, Map<string, number>>();
+  for (const s of signals) {
+    const brand = String(s?.hook_brand || "").trim();
+    if (!brand) continue;
+    const focus = inferProductFocus(String(s?.trend_name || ""));
+    const bucket = focusBrandCounts.get(focus) || new Map<string, number>();
+    bucket.set(brand, (bucket.get(brand) || 0) + 1);
+    focusBrandCounts.set(focus, bucket);
+  }
+  for (const [focus, counts] of focusBrandCounts.entries()) {
+    const top = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name]) => name)
+      .slice(0, 6);
+    focusBrandPool.set(focus, top);
+  }
+
   const liveTrends = [...dedupedTrendGroups.values()].map((group: any[]) => {
     const representative = [...group].sort((a, b) => {
       const heatDelta = Number(b?.heat_score || 0) - Number(a?.heat_score || 0);
@@ -978,6 +1005,11 @@ export default function SectionScout({
     const confidence = getFallbackConfidence(mergedSignal, signalScore);
     const topTargets = extractTrendTargets(mergedSignal);
     const mentions = getTrendMentions(mergedSignal, latestComp);
+    const trendFocus = inferProductFocus(String(representative?.trend_name || ""));
+    const groupBrandHints = group
+      .map((s) => String(s?.hook_brand || "").trim())
+      .filter(Boolean);
+    const focusBrandHints = focusBrandPool.get(trendFocus) || [];
 
     const plan = buildPricePlan({
       entryPrice: mergedSignal.exit_price || 0,
@@ -1034,7 +1066,12 @@ export default function SectionScout({
         evidence: topTargets,
         targetBuy: plan.targetBuy,
       }),
-      brands_to_watch: inferBrandsForTrend(representative?.trend_name, representative?.hook_brand),
+      brands_to_watch: inferBrandsForTrend(
+        representative?.trend_name,
+        representative?.hook_brand,
+        groupBrandHints,
+        focusBrandHints
+      ),
       brandRef: representative?.hook_brand || null,
       style_tier: String(representative?.style_tier || "").toLowerCase() === "core"
         ? "core"
