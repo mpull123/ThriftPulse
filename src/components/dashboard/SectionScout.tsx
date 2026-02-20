@@ -430,6 +430,57 @@ function formatSourceEvidence(sourceCounts: any): string {
   return parts.length ? `Sources: ${parts.join(" • ")}` : "Sources: No per-source evidence logged";
 }
 
+function getSourceTypeCount(sourceCounts: any): number {
+  return (
+    (Number(sourceCounts?.ebay || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.google || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.ai || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.discovery || 0) > 0 ? 1 : 0)
+  );
+}
+
+function getEvidenceQuality(sampleSize: number, sourceTypeCount: number): "Broad" | "Moderate" | "Narrow" {
+  if (sampleSize >= 25 && sourceTypeCount >= 2) return "Broad";
+  if (sampleSize >= 10 || sourceTypeCount >= 2) return "Moderate";
+  return "Narrow";
+}
+
+function getHoldTimeLabel({
+  heat,
+  mentions,
+  confidence,
+}: {
+  heat: number;
+  mentions: number;
+  confidence: ConfidenceLevel;
+}): "Fast (1-2 weeks)" | "Medium (2-6 weeks)" | "Slow (6+ weeks)" {
+  const score =
+    (Number(heat || 0) >= 85 ? 3 : Number(heat || 0) >= 70 ? 2 : 1) +
+    (Number(mentions || 0) >= 90 ? 2 : Number(mentions || 0) >= 45 ? 1 : 0) +
+    (confidence === "high" ? 2 : confidence === "med" ? 1 : 0);
+  if (score >= 6) return "Fast (1-2 weeks)";
+  if (score >= 4) return "Medium (2-6 weeks)";
+  return "Slow (6+ weeks)";
+}
+
+function getKillSwitches(name: string, kind: "brand" | "style"): string[] {
+  const focus = inferProductFocus(name);
+  const base = kind === "brand"
+    ? ["Skip if tag/logo/hardware authenticity is inconsistent."]
+    : ["Skip if condition defects break expected margin."];
+  if (focus === "outerwear") return [...base, "Skip if zipper track fails or lining is damaged."];
+  if (focus === "footwear") return [...base, "Skip if outsole wear is heavy or sole separation is present."];
+  if (focus === "bottoms") return [...base, "Skip if crotch/inseam wear or knee blowouts are significant."];
+  if (focus === "knitwear") return [...base, "Skip if pilling/shrinkage is heavy or cuffs/collar are stretched out."];
+  if (focus === "bags") return [...base, "Skip if strap anchors, corners, or lining are heavily worn."];
+  return [...base, "Skip if high-visibility wear cannot be cleaned/repaired economically."];
+}
+
+function inferBuyCapMode(targetBuy: number, expectedProfit: number): "Strict" | "Flex" {
+  if (targetBuy <= 20 || expectedProfit < 12) return "Strict";
+  return "Flex";
+}
+
 function formatDateLabel(value: string | null | undefined): string {
   if (!value) return "Unknown";
   const d = new Date(value);
@@ -805,6 +856,22 @@ export default function SectionScout({
       latestComp: node.latestComp,
       mentions,
     });
+    const sourceCounts = {
+      ebay: Number(node.ebaySampleTotal || 0),
+      google: Number(node.googleHitTotal || 0),
+      ai: Number(node.aiHitTotal || 0),
+      discovery: Number(node.discoveryHitTotal || 0),
+    };
+    const sampleSize = Number(node.latestComp?.sample_size || 0);
+    const sourceTypeCount = getSourceTypeCount(sourceCounts);
+    const evidenceQuality = getEvidenceQuality(sampleSize, sourceTypeCount);
+    const holdTime = getHoldTimeLabel({
+      heat: avgHeat,
+      mentions,
+      confidence: node.latestComp ? compConfidence : fallbackConfidence,
+    });
+    const buyCapMode = inferBuyCapMode(plan.targetBuy, plan.expectedProfit);
+    const killSwitches = getKillSwitches(node.name, "brand");
 
     return {
       id: node.id,
@@ -847,11 +914,12 @@ export default function SectionScout({
       }),
       last_updated_at: node.lastUpdatedAt,
       source_counts: {
-        ebay: Number(node.ebaySampleTotal || 0),
-        google: Number(node.googleHitTotal || 0),
-        ai: Number(node.aiHitTotal || 0),
-        discovery: Number(node.discoveryHitTotal || 0),
+        ...sourceCounts,
       },
+      evidence_quality: evidenceQuality,
+      hold_time: holdTime,
+      buy_cap_mode: buyCapMode,
+      kill_switches: killSwitches,
       signal_ids: signals
         .filter((s: any) => String(s?.hook_brand || "").trim().toLowerCase() === String(node.name || "").trim().toLowerCase())
         .map((s: any) => String(s?.id || "").trim())
@@ -919,6 +987,22 @@ export default function SectionScout({
       latestComp,
       mentions,
     });
+    const sourceCounts = {
+      ebay: Number(mergedSignal?.ebay_sample_count || 0),
+      google: Number(mergedSignal?.google_trend_hits || 0),
+      ai: Number(mergedSignal?.ai_corpus_hits || 0),
+      discovery: Number(mergedSignal?.ebay_discovery_hits || 0),
+    };
+    const sampleSize = Number(latestComp?.sample_size || 0);
+    const sourceTypeCount = getSourceTypeCount(sourceCounts);
+    const evidenceQuality = getEvidenceQuality(sampleSize, sourceTypeCount);
+    const holdTime = getHoldTimeLabel({
+      heat: Number(mergedSignal.heat_score || 0),
+      mentions,
+      confidence,
+    });
+    const buyCapMode = inferBuyCapMode(plan.targetBuy, plan.expectedProfit);
+    const killSwitches = getKillSwitches(String(representative?.trend_name || ""), "style");
 
     return {
       id: `live-${String(representative?.id || "").trim()}`,
@@ -962,11 +1046,12 @@ export default function SectionScout({
       confidence_reason: getConfidenceReason({ latestComp, confidence, mentions }),
       last_updated_at: representative?.updated_at || representative?.created_at || null,
       source_counts: {
-        ebay: Number(mergedSignal?.ebay_sample_count || 0),
-        google: Number(mergedSignal?.google_trend_hits || 0),
-        ai: Number(mergedSignal?.ai_corpus_hits || 0),
-        discovery: Number(mergedSignal?.ebay_discovery_hits || 0),
+        ...sourceCounts,
       },
+      evidence_quality: evidenceQuality,
+      hold_time: holdTime,
+      buy_cap_mode: buyCapMode,
+      kill_switches: killSwitches,
       collectorRunAge,
     };
   });
@@ -1530,6 +1615,17 @@ export default function SectionScout({
                     </li>
                   ))}
                  </ul>
+                 <div className="mt-4 rounded-2xl border border-emerald-500/15 bg-white/60 dark:bg-slate-900/40 p-3">
+                   <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600 mb-1">Decision Snapshot</p>
+                   <ul className="list-disc pl-5 space-y-1">
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Evidence quality: {node.evidence_quality || "Narrow"}</li>
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Expected hold time: {node.hold_time || "Medium (2-6 weeks)"}</li>
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Buy cap mode: {node.buy_cap_mode || "Strict"}</li>
+                     {Array.isArray(node.kill_switches) && node.kill_switches[0] && (
+                       <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{node.kill_switches[0]}</li>
+                     )}
+                   </ul>
+                 </div>
               </div>
               )}
               <div className="mt-auto space-y-4">
@@ -1697,6 +1793,17 @@ export default function SectionScout({
                      </li>
                    ))}
                  </ul>
+                 <div className="mt-4 rounded-2xl border border-blue-500/15 bg-white/60 dark:bg-slate-900/40 p-3">
+                   <p className="text-[9px] font-black uppercase tracking-widest text-blue-500 mb-1">Decision Snapshot</p>
+                   <ul className="list-disc pl-5 space-y-1">
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Evidence quality: {node.evidence_quality || "Narrow"}</li>
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Expected hold time: {node.hold_time || "Medium (2-6 weeks)"}</li>
+                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Buy cap mode: {node.buy_cap_mode || "Strict"}</li>
+                     {Array.isArray(node.kill_switches) && node.kill_switches[0] && (
+                       <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{node.kill_switches[0]}</li>
+                     )}
+                   </ul>
+                 </div>
                  {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
                    <>
                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic">
