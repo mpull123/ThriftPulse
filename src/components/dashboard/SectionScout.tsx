@@ -204,9 +204,7 @@ function detectBrandsInText(text: string): string[] {
 
 function inferBrandsForTrend(
   trendName: string,
-  hookBrand?: string,
-  signalBrandHints: string[] = [],
-  focusBrandHints: string[] = []
+  hookBrand?: string
 ): string[] {
   const brands = new Set<string>();
   const add = (list: string[]) =>
@@ -215,10 +213,14 @@ function inferBrandsForTrend(
       .filter(Boolean)
       .forEach((v) => brands.add(v));
 
-  add([String(hookBrand || "")]);
-  add(detectBrandsInText(trendName));
-  add(signalBrandHints);
-  add(focusBrandHints);
+  const titleBrands = detectBrandsInText(trendName);
+  add(titleBrands);
+
+  const normalizedTitle = String(trendName || "").toLowerCase();
+  const normalizedHook = String(hookBrand || "").trim();
+  if (normalizedHook && normalizedTitle.includes(normalizedHook.toLowerCase())) {
+    add([normalizedHook]);
+  }
 
   return [...brands].slice(0, 5);
 }
@@ -429,10 +431,7 @@ function formatSourceEvidence(sourceCounts: any): string {
   const ai = Number(sourceCounts?.ai || 0);
   const discovery = Number(sourceCounts?.discovery || 0);
   const parts: string[] = [];
-  if (ebay > 0) {
-    const ebayLabel = ebay >= 50 ? "eBay 50+ (sample cap)" : `eBay ${toDollar(ebay)}`;
-    parts.push(ebayLabel);
-  }
+  if (ebay > 0) parts.push(`eBay ${toDollar(ebay)}`);
   if (google > 0) parts.push(`Google ${toDollar(google)}`);
   if (ai > 0) parts.push(`AI ${toDollar(ai)}`);
   if (discovery > 0) parts.push(`Discovery ${toDollar(discovery)}`);
@@ -519,6 +518,63 @@ function getConfidenceReason({
   return "Comp sample is light, so confidence is capped until more checks land.";
 }
 
+function getCompAgeDays(latestComp: CompCheck | null): number | null {
+  if (!latestComp) return null;
+  const raw = latestComp.checked_at || latestComp.updated_at;
+  if (!raw) return null;
+  const ts = new Date(raw).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.floor((Date.now() - ts) / (1000 * 60 * 60 * 24)));
+}
+
+function capConfidenceByFreshness(
+  confidence: ConfidenceLevel,
+  latestComp: CompCheck | null
+): ConfidenceLevel {
+  const ageDays = getCompAgeDays(latestComp);
+  const sample = Number(latestComp?.sample_size || 0);
+  if (!latestComp || ageDays === null) return "low";
+  if (ageDays > 45) return "low";
+  if (ageDays > 21) return confidence === "high" ? "med" : "low";
+  if (sample < 5 && confidence === "high") return "med";
+  return confidence;
+}
+
+function getConfidenceExplainability({
+  latestComp,
+  sourceCounts,
+  mentions,
+}: {
+  latestComp: CompCheck | null;
+  sourceCounts: { ebay?: number; google?: number; ai?: number; discovery?: number };
+  mentions: number;
+}): string[] {
+  const sample = Number(latestComp?.sample_size || 0);
+  const ageDays = getCompAgeDays(latestComp);
+  const sourceTypes = getSourceTypeCount(sourceCounts);
+  const points: string[] = [];
+
+  if (latestComp && ageDays !== null) {
+    points.push(`Comps: ${sample} sold sample, ${ageDays === 0 ? "checked today" : `${ageDays}d old`}.`);
+  } else {
+    points.push("Comps: no linked recent sold-comp check.");
+  }
+
+  points.push(`Source diversity: ${sourceTypes} active source${sourceTypes === 1 ? "" : "s"}.`);
+  points.push(`Mentions signal: ${formatMentions(mentions)} tracked mentions.`);
+  return points;
+}
+
+function getBrandStyleConflictFlag(name: string, type: "brand" | "style"): string | null {
+  if (type !== "style") return null;
+  const detectedBrands = detectBrandsInText(name);
+  if (detectedBrands.length === 0) return null;
+  const n = String(name || "").toLowerCase();
+  const styleWordMatch = /\b(jacket|coat|jean|denim|pants|trouser|hoodie|sweater|cardigan|sneaker|boot|bag|dress|skirt)\b/.test(n);
+  if (!styleWordMatch) return `Brand-led phrase detected (${detectedBrands.join(", ")}); review brand/style classification.`;
+  return null;
+}
+
 function buildPricePlan({
   entryPrice,
   heat,
@@ -583,6 +639,14 @@ function buildPricePlan({
   const rangePct = confidence === "high" ? 0.08 : confidence === "med" ? 0.12 : 0.18;
   const saleLow = Math.max(10, toDollar(expectedSale * (1 - rangePct)));
   const saleHigh = Math.max(saleLow, toDollar(expectedSale * (1 + rangePct)));
+  const conditionPoor = Math.max(10, toDollar(saleLow * 0.82));
+  const conditionGood = toDollar((saleLow + saleHigh) / 2);
+  const conditionExcellent = toDollar(saleHigh * 1.1);
+  const safeBuyCap = Math.max(4, toDollar(saleLow * 0.45));
+  const buyCapWarning =
+    targetBuy > safeBuyCap
+      ? `Guardrail: keep buy under ${formatUsd(safeBuyCap)} for safer margin in used condition.`
+      : "";
   const assumptions = `Assumes 13% fees, $7 shipping, $3 prep, used-condition pricing${highRisk ? ", plus risk buffer" : ""}.`;
 
   return {
@@ -593,8 +657,12 @@ function buildPricePlan({
     expectedProfit,
     decision,
     decisionReason,
+    buyCapWarning,
     compLow: toDollar(compLow),
     compHigh: toDollar(compHigh),
+    conditionPoor,
+    conditionGood,
+    conditionExcellent,
     assumptions,
   };
 }
@@ -645,6 +713,7 @@ export default function SectionScout({
   onOpenTrend,
   onDemoteTrend,
   onArchiveTrend,
+  onReclassifySignal,
   signals = [],
   compChecks = [],
   collectorJobs = [],
@@ -656,6 +725,11 @@ export default function SectionScout({
   onOpenTrend?: (term: string) => void;
   onDemoteTrend?: (signalId?: string) => void;
   onArchiveTrend?: (signalId?: string) => void;
+  onReclassifySignal?: (
+    signalId: string,
+    nextTrack: "Brand" | "Style Category",
+    hookBrand?: string | null
+  ) => Promise<void> | void;
   signals?: any[];
   compChecks?: CompCheck[];
   collectorJobs?: CollectorJob[];
@@ -857,10 +931,12 @@ export default function SectionScout({
       mentionCount: mentions,
     });
     const riskText = [...node.notes].find((n: string) => String(n).toLowerCase().includes("risk")) || "";
+    const baseConfidence: ConfidenceLevel = node.latestComp ? compConfidence : fallbackConfidence;
+    const confidence: ConfidenceLevel = capConfidenceByFreshness(baseConfidence, node.latestComp);
     const plan = buildPricePlan({
       entryPrice: node.priceCount ? Math.round(node.priceTotal / node.priceCount) : 75,
       heat: avgHeat,
-      confidence: node.latestComp ? compConfidence : fallbackConfidence,
+      confidence,
       riskText,
       latestComp: node.latestComp,
       mentions,
@@ -890,10 +966,15 @@ export default function SectionScout({
       source: "Live Brand Monitor",
       sentiment: avgHeat > 80 ? "Surging" : "Stable",
       mentions,
-      confidence: node.latestComp ? compConfidence : fallbackConfidence,
+      confidence,
       confidence_reason: getConfidenceReason({
         latestComp: node.latestComp,
-        confidence: node.latestComp ? compConfidence : fallbackConfidence,
+        confidence,
+        mentions,
+      }),
+      confidence_explainability: getConfidenceExplainability({
+        latestComp: node.latestComp,
+        sourceCounts,
         mentions,
       }),
       compAgeLabel: getCompAgeLabel(node.latestComp),
@@ -914,6 +995,12 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
+      buy_cap_warning: plan.buyCapWarning,
+      condition_curve: {
+        poor: plan.conditionPoor,
+        good: plan.conditionGood,
+        excellent: plan.conditionExcellent,
+      },
       what_to_buy: buildPrioritizedLookFors({
         title: node.name,
         kind: "brand",
@@ -929,6 +1016,7 @@ export default function SectionScout({
       hold_time: holdTime,
       buy_cap_mode: buyCapMode,
       kill_switches: killSwitches,
+      classification_flag: null,
       signal_ids: signals
         .filter((s: any) => String(s?.hook_brand || "").trim().toLowerCase() === String(node.name || "").trim().toLowerCase())
         .map((s: any) => String(s?.id || "").trim())
@@ -949,24 +1037,6 @@ export default function SectionScout({
       existing.push(s);
       dedupedTrendGroups.set(key, existing);
     });
-
-  const focusBrandPool = new Map<string, string[]>();
-  const focusBrandCounts = new Map<string, Map<string, number>>();
-  for (const s of signals) {
-    const brand = String(s?.hook_brand || "").trim();
-    if (!brand) continue;
-    const focus = inferProductFocus(String(s?.trend_name || ""));
-    const bucket = focusBrandCounts.get(focus) || new Map<string, number>();
-    bucket.set(brand, (bucket.get(brand) || 0) + 1);
-    focusBrandCounts.set(focus, bucket);
-  }
-  for (const [focus, counts] of focusBrandCounts.entries()) {
-    const top = [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([name]) => name)
-      .slice(0, 6);
-    focusBrandPool.set(focus, top);
-  }
 
   const liveTrends = [...dedupedTrendGroups.values()].map((group: any[]) => {
     const representative = [...group].sort((a, b) => {
@@ -1002,15 +1072,10 @@ export default function SectionScout({
         })[0] || null;
 
     const signalScore = getSignalScore(mergedSignal, latestComp);
-    const confidence = getFallbackConfidence(mergedSignal, signalScore);
     const topTargets = extractTrendTargets(mergedSignal);
     const mentions = getTrendMentions(mergedSignal, latestComp);
-    const trendFocus = inferProductFocus(String(representative?.trend_name || ""));
-    const groupBrandHints = group
-      .map((s) => String(s?.hook_brand || "").trim())
-      .filter(Boolean);
-    const focusBrandHints = focusBrandPool.get(trendFocus) || [];
-
+    const baseConfidence: ConfidenceLevel = getFallbackConfidence(mergedSignal, signalScore);
+    const confidence: ConfidenceLevel = capConfidenceByFreshness(baseConfidence, latestComp);
     const plan = buildPricePlan({
       entryPrice: mergedSignal.exit_price || 0,
       heat: mergedSignal.heat_score || 50,
@@ -1058,6 +1123,12 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
+      buy_cap_warning: plan.buyCapWarning,
+      condition_curve: {
+        poor: plan.conditionPoor,
+        good: plan.conditionGood,
+        excellent: plan.conditionExcellent,
+      },
       intel: getSignalIntel(mergedSignal),
       what_to_buy: buildPrioritizedLookFors({
         title: representative?.trend_name || "",
@@ -1068,9 +1139,7 @@ export default function SectionScout({
       }),
       brands_to_watch: inferBrandsForTrend(
         representative?.trend_name,
-        representative?.hook_brand,
-        groupBrandHints,
-        focusBrandHints
+        representative?.hook_brand
       ),
       brandRef: representative?.hook_brand || null,
       style_tier: String(representative?.style_tier || "").toLowerCase() === "core"
@@ -1081,6 +1150,12 @@ export default function SectionScout({
       compAgeLabel: getCompAgeLabel(latestComp),
       confidence,
       confidence_reason: getConfidenceReason({ latestComp, confidence, mentions }),
+      confidence_explainability: getConfidenceExplainability({
+        latestComp,
+        sourceCounts,
+        mentions,
+      }),
+      classification_flag: getBrandStyleConflictFlag(String(representative?.trend_name || ""), "style"),
       last_updated_at: representative?.updated_at || representative?.created_at || null,
       source_counts: {
         ...sourceCounts,
@@ -1264,6 +1339,36 @@ export default function SectionScout({
     setActionNotice(`Archived ${selectedNodes.length} node(s). Updated ${ids.length} record(s) to Archived.`);
     setSelectedIds([]);
     setCompareIds([]);
+  };
+
+  const moveNodeToBrand = async (node: any) => {
+    if (!onReclassifySignal) return;
+    const ids = Array.from(new Set(getSignalIdsForNode(node)));
+    if (ids.length === 0) {
+      setActionNotice("No linked signal records found for this node.");
+      return;
+    }
+    const detectedBrand =
+      (Array.isArray(node?.brands_to_watch) && node.brands_to_watch.length > 0
+        ? String(node.brands_to_watch[0] || "").trim()
+        : "") || String(node?.brandRef || "").trim() || String(node?.name || "").trim();
+    for (const id of ids) {
+      if (id) await onReclassifySignal(id, "Brand", detectedBrand);
+    }
+    setActionNotice(`Moved ${node?.name || "node"} to Brand (${ids.length} record${ids.length === 1 ? "" : "s"}).`);
+  };
+
+  const keepNodeAsStyle = async (node: any) => {
+    if (!onReclassifySignal) return;
+    const ids = Array.from(new Set(getSignalIdsForNode(node)));
+    if (ids.length === 0) {
+      setActionNotice("No linked signal records found for this node.");
+      return;
+    }
+    for (const id of ids) {
+      if (id) await onReclassifySignal(id, "Style Category", null);
+    }
+    setActionNotice(`Kept ${node?.name || "node"} as Style (${ids.length} record${ids.length === 1 ? "" : "s"}).`);
   };
 
   const applyPreset = (preset: "high_confidence" | "low_buy_in" | "quick_flips" | "vintage") => {
@@ -1634,25 +1739,30 @@ export default function SectionScout({
                 </div>
               </div>
               {viewMode === "detailed" && (
-              <div className="bg-emerald-500/5 border border-emerald-500/10 p-6 rounded-3xl mb-8 flex-1">
-                 {node.compAgeLabel && (
-                   <div className="mb-3">
-                     <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
-                       Comps checked: {node.compAgeLabel}
-                     </span>
-                   </div>
-                 )}
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-1 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
-                 <ul className="list-disc pl-5 space-y-2">
-                  {(node.what_to_buy || []).slice(0, 3).map((item: string, i: number) => (
+              <div className="bg-emerald-500/5 border border-emerald-500/10 p-4 rounded-3xl mb-5 flex-1">
+                 <div className="flex flex-wrap gap-2 mb-3">
+                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+                     Comps: {node.compAgeLabel || "Unknown"}
+                   </span>
+                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+                     {`Evidence ${node.evidence_quality || "Narrow"}`}
+                   </span>
+                 </div>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-2 italic">
+                   <CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets
+                 </p>
+                 <ul className="list-disc pl-5 space-y-1.5">
+                  {(node.what_to_buy || []).slice(0, 2).map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                       {toTargetBullet(item, "brand")}
                     </li>
                   ))}
                  </ul>
-                 <p className="mt-3 text-[10px] font-black text-slate-500 dark:text-slate-300">
-                   {`Evidence ${node.evidence_quality || "Narrow"} • Hold ${node.hold_time || "Medium (2-6 weeks)"} • ${node.buy_cap_mode || "Strict"} cap`}
-                 </p>
+                 {node.buy_cap_warning && (
+                   <p className="mt-3 text-[9px] font-black uppercase tracking-wider text-amber-500">
+                     {node.buy_cap_warning}
+                   </p>
+                 )}
               </div>
               )}
               <div className="mt-auto space-y-4">
@@ -1661,20 +1771,12 @@ export default function SectionScout({
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
-                </div>
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
                     {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
                   </p>
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                    Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
+                    {formatSourceEvidence(node.source_counts)} • {`Updated ${formatDateLabel(node.last_updated_at)}`}
                   </p>
-                  {node.source_counts && (
-                    <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                      {formatSourceEvidence(node.source_counts)}
-                    </p>
-                  )}
                 </div>
                 <div className="flex items-center justify-between">
                    <div>
@@ -1792,38 +1894,34 @@ export default function SectionScout({
               </div>
               
               {viewMode === "detailed" && (
-              <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl mb-6 border border-slate-100 dark:border-slate-800">
-                 {node.compAgeLabel && (
-                   <div className="mb-3">
-                     <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
-                       Comps checked: {node.compAgeLabel}
-                     </span>
-                   </div>
-                 )}
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
-                 <ul className="list-disc pl-5 space-y-2">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 3).map((item: string, i: number) => (
+              <div className="bg-slate-50 dark:bg-white/5 p-4 rounded-3xl mb-5 border border-slate-100 dark:border-slate-800">
+                 <div className="flex flex-wrap gap-2 mb-3">
+                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+                     Comps: {node.compAgeLabel || "Unknown"}
+                   </span>
+                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+                     {`Evidence ${node.evidence_quality || "Narrow"}`}
+                   </span>
+                 </div>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-2 italic">
+                   <CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets
+                 </p>
+                 <ul className="list-disc pl-5 space-y-1.5">
+                   {node.what_to_buy && node.what_to_buy.slice(0, 2).map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                        {toTargetBullet(item, "style")}
                      </li>
                    ))}
                  </ul>
-                 <p className="mt-3 text-[10px] font-black text-slate-500 dark:text-slate-300">
-                   {`Evidence ${node.evidence_quality || "Narrow"} • Hold ${node.hold_time || "Medium (2-6 weeks)"} • ${node.buy_cap_mode || "Strict"} cap`}
-                 </p>
                  {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
-                   <>
-                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic">
-                       <Hash size={12} className="mr-2 text-blue-500" /> Brands to Watch:
-                     </p>
-                     <div className="flex flex-wrap gap-2">
-                       {node.brands_to_watch.slice(0, 3).map((brand: string, i: number) => (
-                         <span key={i} className="px-2 py-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 text-[10px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                           {brand}
-                         </span>
-                       ))}
-                     </div>
-                   </>
+                   <p className="mt-3 text-[9px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-300">
+                     {`Watch brands: ${node.brands_to_watch.slice(0, 2).join(" • ")}`}
+                   </p>
+                 )}
+                 {node.buy_cap_warning && (
+                   <p className="mt-2 text-[9px] font-black uppercase tracking-wider text-amber-500">
+                     {node.buy_cap_warning}
+                   </p>
                  )}
               </div>
               )}
@@ -1834,17 +1932,16 @@ export default function SectionScout({
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
-                </div>
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
                     {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
                   </p>
+                  {node.classification_flag && (
+                    <p className="mt-2 text-[9px] font-black uppercase tracking-wider text-amber-500">
+                      {node.classification_flag}
+                    </p>
+                  )}
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                    {formatSourceEvidence(node.source_counts)}
-                  </p>
-                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
-                    Updated: {formatDateLabel(node.last_updated_at)} • Comps: {node.compAgeLabel || "Unknown"}
+                    {formatSourceEvidence(node.source_counts)} • {`Updated ${formatDateLabel(node.last_updated_at)}`}
                   </p>
                 </div>
                 <div className="flex items-center justify-between">
@@ -1886,6 +1983,28 @@ export default function SectionScout({
                   >
                     Track in Radar
                   </button>
+                )}
+                {node.classification_flag && onReclassifySignal && (
+                  <div className="grid grid-cols-1 gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void moveNodeToBrand(node);
+                      }}
+                      className="w-full py-3 bg-purple-500/10 text-purple-600 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-purple-500/20 transition-all"
+                    >
+                      Move to Brand
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void keepNodeAsStyle(node);
+                      }}
+                      className="w-full py-3 bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-slate-300/70 dark:hover:bg-slate-700 transition-all"
+                    >
+                      Keep as Style
+                    </button>
+                  </div>
                 )}
                 <button
                   onClick={(e) => {

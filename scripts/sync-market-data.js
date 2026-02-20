@@ -703,6 +703,29 @@ function classifyTrendTerm(term) {
   return { ok: true, reason: 'accepted', type: trendType, brand };
 }
 
+function classifyTrendTermDiscovery(term) {
+  const cleaned = String(term || '').trim();
+  if (!cleaned) return { ok: false, reason: 'empty', type: 'rejected', brand: null };
+  if (cleaned.length < 4) return { ok: false, reason: 'too_short', type: 'rejected', brand: null };
+  if (cleaned.length > 70) return { ok: false, reason: 'too_long', type: 'rejected', brand: null };
+  if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion', type: 'rejected', brand: null };
+  if (isEditorialNoiseTerm(cleaned)) return { ok: false, reason: 'editorial_noise', type: 'rejected', brand: null };
+  if (cleaned.split(/\s+/).length > 7) return { ok: false, reason: 'too_many_words', type: 'rejected', brand: null };
+
+  const brand = inferBrandFromTerm(cleaned);
+  const hasNoun = hasStyleProductNoun(cleaned);
+  const fashionish = isFashionTerm(cleaned);
+
+  if (!brand && !hasNoun) return { ok: false, reason: 'no_product_noun', type: 'rejected', brand: null };
+  if (!brand && !fashionish) return { ok: false, reason: 'no_fashion_keyword', type: 'rejected', brand: null };
+  if (!brand && isGenericStyleOnlyTerm(cleaned)) {
+    return { ok: false, reason: 'generic_style_only', type: 'rejected', brand: null };
+  }
+
+  if (brand && !hasNoun) return { ok: true, reason: 'accepted_brand_only_relaxed', type: 'brand', brand };
+  return { ok: true, reason: 'accepted_relaxed', type: brand ? 'brand_style' : 'style', brand };
+}
+
 function shouldUseTrendTerm(term) {
   return evaluateTrendTerm(term).ok;
 }
@@ -805,7 +828,8 @@ function titleToDiscoveryCandidate(title) {
 
 async function fetchEbayDiscoveryTerms(seedTerms) {
   const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, 28);
-  const discovered = [];
+  const discoveredStrict = [];
+  const discoveredRelaxed = [];
 
   for (const seed of seeds) {
     try {
@@ -828,7 +852,12 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
 
       for (const title of titles) {
         const candidate = titleToDiscoveryCandidate(title);
-        if (shouldUseTrendTerm(candidate)) discovered.push(candidate);
+        if (shouldUseTrendTerm(candidate)) {
+          discoveredStrict.push(candidate);
+        } else {
+          const relaxedVerdict = classifyTrendTermDiscovery(candidate);
+          if (relaxedVerdict.ok) discoveredRelaxed.push(candidate);
+        }
       }
     } catch (err) {
       console.warn(`ebay discovery failed for seed "${seed}":`, err.message);
@@ -837,7 +866,10 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
 
   const deduped = [];
   const seen = new Set();
-  for (const term of discovered) {
+  const mergedDiscovered = discoveredStrict.length > 0
+    ? discoveredStrict
+    : discoveredRelaxed;
+  for (const term of mergedDiscovered) {
     const key = getDedupeKey(term);
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -849,7 +881,7 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
   ).slice(0, Number(process.env.MAX_EBAY_DISCOVERY_TERMS || 250));
 
   console.log(
-    `📊 eBay discovery stats: seeds=${seeds.length} raw=${discovered.length} deduped=${deduped.length} kept=${kept.length}`
+    `📊 eBay discovery stats: seeds=${seeds.length} strict=${discoveredStrict.length} relaxed=${discoveredRelaxed.length} deduped=${deduped.length} kept=${kept.length}`
   );
 
   return kept;
@@ -1093,9 +1125,13 @@ async function fetchGoogleTrendsTerms() {
 
   const uniqueRaw = [...new Set(rawTerms.map((t) => t.trim()))].filter(Boolean);
   const keywordFiltered = [...new Set(filteredTerms.map((t) => t.trim()))];
-  const uniqueFiltered = keywordFiltered.filter(shouldUseTrendTerm);
+  const strictFiltered = keywordFiltered.filter(shouldUseTrendTerm);
+  const relaxedFiltered = keywordFiltered.filter((term) => classifyTrendTermDiscovery(term).ok);
+  const uniqueFiltered = strictFiltered.length > 0
+    ? strictFiltered
+    : applyDiversityCaps(relaxedFiltered, Number(process.env.GOOGLE_TRENDS_BUCKET_CAP || 8)).slice(0, Number(process.env.MAX_GOOGLE_TRENDS_TERMS || 120));
   console.log(
-    `📊 Google Trends filter stats: raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strictFiltered=${uniqueFiltered.length}`
+    `📊 Google Trends filter stats: raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strict=${strictFiltered.length} relaxed=${relaxedFiltered.length} kept=${uniqueFiltered.length}`
   );
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
@@ -1207,7 +1243,8 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
   let created = 0;
   for (const term of newTerms) {
     try {
-      const termVerdict = classifyTrendTerm(term);
+      const strictVerdict = classifyTrendTerm(term);
+      const termVerdict = strictVerdict.ok ? strictVerdict : classifyTrendTermDiscovery(term);
       if (!termVerdict.ok) {
         await writeTrendRejectionLogs([{
           collector_source: 'seed_merge',
@@ -1484,7 +1521,8 @@ async function syncMarketPulse() {
 
     for (const signal of signals) {
       console.log(`🔍 Syncing: ${signal.trend_name}`);
-      const trendVerdict = classifyTrendTerm(signal.trend_name);
+      const strictVerdict = classifyTrendTerm(signal.trend_name);
+      const trendVerdict = strictVerdict.ok ? strictVerdict : classifyTrendTermDiscovery(signal.trend_name);
       if (!trendVerdict.ok) {
         await writeTrendRejectionLogs([{
           collector_source: 'market_signal_update',

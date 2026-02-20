@@ -337,6 +337,43 @@ export default function DashboardPage() {
     if (!id) return;
     await updateSignalStage([id], "archived");
   };
+  const reclassifySignalTrack = async (
+    signalId: string,
+    nextTrack: "Brand" | "Style Category",
+    hookBrand?: string | null
+  ) => {
+    const id = String(signalId || "").trim();
+    if (!id) return;
+    const nowIso = new Date().toISOString();
+    const normalizedHookBrand = String(hookBrand || "").trim();
+
+    setRealSignals((prev) =>
+      prev.map((s: any) =>
+        String(s?.id || "") === id
+          ? {
+              ...s,
+              track: nextTrack,
+              hook_brand: nextTrack === "Brand" ? normalizedHookBrand || s?.hook_brand || s?.trend_name || "" : null,
+              stage_updated_at: nowIso,
+            }
+          : s
+      )
+    );
+
+    const updatePayload: Record<string, unknown> = {
+      track: nextTrack,
+      stage_updated_at: nowIso,
+      hook_brand:
+        nextTrack === "Brand"
+          ? normalizedHookBrand || undefined
+          : null,
+    };
+    const { error } = await supabase.from("market_signals").update(updatePayload).eq("id", id);
+    if (error) {
+      console.error("Failed to reclassify signal track:", error.message);
+      fetchRealData();
+    }
+  };
 
   // --- CONFIRM FOUND ITEM (Trunk -> Database) ---
   const confirmFoundItem = async (trunkItem: any, storeName: string) => {
@@ -500,6 +537,9 @@ export default function DashboardPage() {
               onOpenTrend={(term) => openViewWithFocus("analysis", term)}
               onDemoteTrend={(signalId) => demoteSignalToRadar(signalId)}
               onArchiveTrend={(signalId) => archiveSignal(signalId)}
+              onReclassifySignal={(signalId, nextTrack, hookBrand) =>
+                reclassifySignalTrack(signalId, nextTrack, hookBrand)
+              }
               focusTerm={crossPageFocus}
               allowFallback={false}
             />
