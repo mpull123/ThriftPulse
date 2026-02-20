@@ -68,6 +68,60 @@ function buildNodeSuggestions(node: any): string[] {
   return [`Look for variations of ${nodeName}: prioritize quality construction and clean condition.`];
 }
 
+function uniqStrings(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of items) {
+    const v = String(raw || "").trim();
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+function buildNodeSnapshotBullets(node: any): string[] {
+  const name = String(node?.name || "").trim();
+  const t = name.toLowerCase();
+  const targetBuy = Number(node?.target_buy ?? node?.entry_price ?? 0);
+  const compLow = Number(node?.comp_low || 0);
+  const compHigh = Number(node?.comp_high || 0);
+  const sources = node?.source_counts || {};
+  const sourceTypes =
+    (Number(sources?.ebay || 0) > 0 ? 1 : 0) +
+    (Number(sources?.google || 0) > 0 ? 1 : 0) +
+    (Number(sources?.ai || 0) > 0 ? 1 : 0);
+
+  const bullets: string[] = [];
+  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
+    bullets.push(`${name}: prioritize zipper track, lining integrity, and cuff wear first.`);
+  } else if (t.includes("jean") || t.includes("denim") || t.includes("cargo") || t.includes("pants")) {
+    bullets.push(`${name}: inspect inseam/crotch/knee wear before considering style details.`);
+  } else if (t.includes("boot") || t.includes("sneaker") || t.includes("shoe")) {
+    bullets.push(`${name}: inspect outsole wear, heel drag, and upper structure.`);
+  } else if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) {
+    bullets.push(`${name}: check cuffs, collar shape, pilling, and shrinkage signs.`);
+  } else {
+    bullets.push(`${name}: prioritize clean condition and strong construction over trend hype.`);
+  }
+
+  if (Number.isFinite(targetBuy) && targetBuy > 0) {
+    bullets.push(`Hard buy cap: $${Math.round(targetBuy)} unless condition/tags are exceptional.`);
+  }
+  if (compLow > 0 || compHigh > 0) {
+    bullets.push(`Comp spread: $${Math.round(compLow)}-$${Math.round(compHigh)}. Favor pieces that can land near the upper third.`);
+  }
+  if (sourceTypes <= 1) {
+    bullets.push("Evidence is narrow-source right now. Prioritize conservative buys.");
+  } else {
+    bullets.push(`Evidence spans ${sourceTypes} source types, which strengthens confidence.`);
+  }
+
+  return uniqStrings(bullets).slice(0, 4);
+}
+
 function logSchemaHealth(
   tableName: string,
   rows: Record<string, unknown>[] = [],
@@ -509,7 +563,7 @@ export default function DashboardPage() {
               {selectedNode.brandRef && <p className="text-lg font-bold text-slate-400 italic">via {selectedNode.brandRef}</p>}
             </div>
 
-            <div className="space-y-8">
+            <div className="space-y-6">
               {(selectedNode.decision || selectedNode.decision_reason) && (
                 <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Buy Decision</h4>
@@ -536,8 +590,8 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Price Bands</h4>
+              <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Used Pricing (Card View)</h4>
                 <div className="grid grid-cols-3 gap-3 text-center">
                   <div>
                     <p className="text-[9px] font-black uppercase text-slate-400">Target Buy</p>
@@ -553,7 +607,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 {(selectedNode.comp_low || selectedNode.comp_high) && (
-                  <p className="mt-4 text-[11px] font-black uppercase tracking-widest text-slate-500">
+                  <p className="mt-3 text-[11px] font-black uppercase tracking-widest text-slate-500">
                     Comp Range: ${selectedNode.comp_low || 0} - ${selectedNode.comp_high || 0}
                   </p>
                 )}
@@ -568,7 +622,7 @@ export default function DashboardPage() {
               </div>
 
               {(selectedNode.confidence_reason || selectedNode.last_updated_at || selectedNode.source_counts) && (
-                <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl border border-slate-200 dark:border-slate-700">
+                <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Why This Score</h4>
                   {selectedNode.confidence_reason && (
                     <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">{selectedNode.confidence_reason}</p>
@@ -578,13 +632,16 @@ export default function DashboardPage() {
                       Sources: eBay {selectedNode.source_counts.ebay || 0} • Google {selectedNode.source_counts.google || 0} • AI {selectedNode.source_counts.ai || 0}
                     </p>
                   )}
+                  <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    Updated: {selectedNode.last_updated_at ? new Date(selectedNode.last_updated_at).toLocaleDateString() : "Unknown"} • Comps: {selectedNode.compAgeLabel || "Unknown"}
+                  </p>
                 </div>
               )}
 
-              <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Sourcing Intelligence</h4>
+              <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Node Snapshot</h4>
                 <ul className="list-disc pl-5 space-y-2">
-                  {splitIntelToBullets(selectedNode.intel).map((line, i) => (
+                  {buildNodeSnapshotBullets(selectedNode).map((line, i) => (
                     <li key={i} className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">
                       {line}
                     </li>
@@ -592,13 +649,28 @@ export default function DashboardPage() {
                 </ul>
               </div>
 
+              {splitIntelToBullets(selectedNode.intel).length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
+                    <Info size={14} className="mr-2" /> Sourcing Intelligence
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5">
+                    {splitIntelToBullets(selectedNode.intel).slice(0, 3).map((line: string, i: number) => (
+                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-200 italic">
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {buildNodeSuggestions(selectedNode).length > 0 && (
                 <div>
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center">
-                    <CheckSquare size={14} className="mr-2" /> Full Shopping List ({buildNodeSuggestions(selectedNode).length})
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
+                    <CheckSquare size={14} className="mr-2" /> Top Targets (Same As Card)
                   </h4>
-                  <ul className="space-y-3">
-                    {buildNodeSuggestions(selectedNode).map((item: string, i: number) => (
+                  <ul className="space-y-2">
+                    {buildNodeSuggestions(selectedNode).slice(0, 4).map((item: string, i: number) => (
                       <li key={i} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
                         <span className="mr-2 leading-5 text-blue-500">•</span>
                         <span>{item}</span>
