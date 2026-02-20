@@ -112,7 +112,7 @@ function buildPrioritizedLookFors({
     .map((v) => String(v || "").trim())
     .filter(Boolean)
     .slice(0, 3)
-    .forEach((v, i) => add(72 - i, `Look for cue: ${v}.`));
+    .forEach((v, i) => add(99 - i, `Look for cue: ${v}.`));
 
   const deduped = new Map<string, { priority: number; text: string }>();
   for (const item of ranked) {
@@ -420,7 +420,10 @@ function formatSourceEvidence(sourceCounts: any): string {
   const ai = Number(sourceCounts?.ai || 0);
   const discovery = Number(sourceCounts?.discovery || 0);
   const parts: string[] = [];
-  if (ebay > 0) parts.push(`eBay ${toDollar(ebay)}`);
+  if (ebay > 0) {
+    const ebayLabel = ebay >= 50 ? "eBay 50+ (sample cap)" : `eBay ${toDollar(ebay)}`;
+    parts.push(ebayLabel);
+  }
   if (google > 0) parts.push(`Google ${toDollar(google)}`);
   if (ai > 0) parts.push(`AI ${toDollar(ai)}`);
   if (discovery > 0) parts.push(`Discovery ${toDollar(discovery)}`);
@@ -1521,7 +1524,7 @@ export default function SectionScout({
                  <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed max-h-16 overflow-hidden">{node.intel}</p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                  {(node.what_to_buy || []).slice(0, 4).map((item: string, i: number) => (
+                  {(node.what_to_buy || []).slice(0, 5).map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                       {toTargetBullet(item, "brand")}
                     </li>
@@ -1688,7 +1691,7 @@ export default function SectionScout({
                  </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 4).map((item: string, i: number) => (
+                   {node.what_to_buy && node.what_to_buy.slice(0, 5).map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                        {toTargetBullet(item, "style")}
                      </li>
