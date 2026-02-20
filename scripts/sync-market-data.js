@@ -25,6 +25,61 @@ const FASHION_CORPUS_SOURCES = [
 const EXTRA_PUBLICATION_FEEDS = Array.isArray(feedConfig?.publication_feeds) ? feedConfig.publication_feeds : [];
 const FASHION_RSS_FEEDS = [...new Set([...FASHION_CORPUS_SOURCES, ...EXTRA_PUBLICATION_FEEDS])];
 const GOOGLE_NEWS_QUERY_TERMS = Array.isArray(feedConfig?.google_news_queries) ? feedConfig.google_news_queries : [];
+const STYLE_PRODUCT_NOUNS = [
+  'jacket', 'coat', 'hoodie', 'sweatshirt', 'sweater', 'cardigan', 'tee',
+  't-shirt', 'shirt', 'pants', 'jeans', 'trousers', 'skirt', 'dress',
+  'boot', 'boots', 'sneaker', 'sneakers', 'loafer', 'loafers', 'bag', 'bags',
+  'vest', 'parka', 'anorak'
+];
+const BRAND_LEXICON = [
+  { label: "Arc'teryx", patterns: [/\barc['’]?teryx\b/, /\barcteryx\b/] },
+  { label: 'Carhartt', patterns: [/\bcarhartt\b/] },
+  { label: 'Salomon', patterns: [/\bsalomon\b/] },
+  { label: 'Nike', patterns: [/\bnike\b/] },
+  { label: 'Adidas', patterns: [/\badidas\b/] },
+  { label: 'New Balance', patterns: [/\bnew\s+balance\b/] },
+  { label: 'Patagonia', patterns: [/\bpatagonia\b/] },
+  { label: 'The North Face', patterns: [/\bnorth\s+face\b/] },
+  { label: "Levi's", patterns: [/\blevi['’]?s?\b/] },
+  { label: 'Stussy', patterns: [/\bstussy\b/] },
+  { label: 'Supreme', patterns: [/\bsupreme\b/] },
+  { label: 'Missguided', patterns: [/\bmissguided\b/] },
+  { label: 'Forever 21', patterns: [/\bforever\s*21\b/] },
+  { label: 'ASOS', patterns: [/\basos\b/] },
+  { label: 'Mango', patterns: [/\bmango\b/] },
+  { label: 'Reformation', patterns: [/\breformation\b/] },
+  { label: 'Urban Outfitters', patterns: [/\burban\s+outfitters\b/] },
+  { label: 'PacSun', patterns: [/\bpacsun\b/] },
+  { label: 'Old Navy', patterns: [/\bold\s+navy\b/] },
+  { label: 'Banana Republic', patterns: [/\bbanana\s+republic\b/] },
+  { label: 'Dr. Martens', patterns: [/\bdr\.?\s*martens\b/, /\bdoc\s+martens\b/] },
+  { label: 'Timberland', patterns: [/\btimberland\b/] },
+  { label: 'Vans', patterns: [/\bvans\b/] },
+  { label: 'Puma', patterns: [/\bpuma\b/] },
+  { label: 'Sorel', patterns: [/\bsorel\b/] },
+  { label: 'Goyard', patterns: [/\bgoyard\b/] },
+  { label: "Béis", patterns: [/\bb[ée]is\b/] },
+  { label: 'Gucci', patterns: [/\bgucci\b/] },
+  { label: 'Prada', patterns: [/\bprada\b/] },
+  { label: 'Bottega Veneta', patterns: [/\bbottega\b/, /\bbottega\s+veneta\b/] }
+];
+const GENERIC_STYLE_ONLY_TERMS = new Set([
+  'cargo pants',
+  'wide-leg pants',
+  'leather jacket',
+  'denim jeans',
+  'denim skirt',
+  'wool coat',
+  'suede jacket',
+  'ankle boots',
+  'combat boots',
+  'chelsea boots',
+  'platform sneakers',
+  'track pants',
+  'graphic hoodies',
+  'vintage t-shirt',
+  'vintage tee'
+]);
 
 function safeNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -116,31 +171,68 @@ async function writeTrendRejectionLogs(rows) {
 }
 
 async function fetchEbayStats(term, fallbackPrice) {
-  const ebayUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(term)}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1`;
-  const response = await fetch(ebayUrl, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-  });
-  const html = await response.text();
-  const $ = cheerio.load(html);
-
+  const maxPages = Math.max(1, Number(process.env.EBAY_MAX_PAGES || 3));
+  const maxSamples = Math.max(30, Number(process.env.EBAY_MAX_SAMPLES || 180));
   const prices = [];
-  $('.s-item__price').each((i, el) => {
-    const priceText = $(el).text().replace(/[^0-9.]/g, '');
-    const p = parseFloat(priceText);
-    if (!Number.isNaN(p) && p > 0) prices.push(p);
-  });
+  const seenListings = new Set();
 
-  // Fallback parse: some responses miss selector structure but still contain price spans.
-  if (!prices.length) {
-    const roughMatches = [...html.matchAll(/\$([0-9]+(?:\.[0-9]{2})?)/g)]
-      .map((m) => parseFloat(m[1]))
-      .filter((n) => Number.isFinite(n) && n > 5 && n < 5000)
-      .slice(0, 50);
-    prices.push(...roughMatches);
+  const parsePriceText = (text) => {
+    const parsed = String(text || '').replace(/[^0-9.]/g, '');
+    const p = parseFloat(parsed);
+    return Number.isFinite(p) && p > 5 && p < 5000 ? p : null;
+  };
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const ebayUrl =
+      `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(term)}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1&_pgn=${page}`;
+    let html = '';
+    let responseOk = false;
+    try {
+      const response = await fetch(ebayUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      responseOk = response.ok;
+      html = await response.text();
+    } catch (err) {
+      if (page === 1) throw err;
+      break;
+    }
+
+    if (!responseOk && page > 1) break;
+
+    const $ = cheerio.load(html);
+    const pagePrices = [];
+    $('.s-item').each((_, el) => {
+      const card = $(el);
+      const href = String(card.find('.s-item__link').attr('href') || '').trim();
+      const listingKey = href ? href.replace(/[?#].*$/, '') : '';
+      if (listingKey && seenListings.has(listingKey)) return;
+
+      const priceRaw = card.find('.s-item__price').first().text();
+      const price = parsePriceText(priceRaw);
+      if (price === null) return;
+      if (listingKey) seenListings.add(listingKey);
+      pagePrices.push(price);
+    });
+
+    if (!pagePrices.length) {
+      // Fallback parse: some responses miss selector structure but still contain price spans.
+      const roughMatches = [...html.matchAll(/\$([0-9]+(?:\.[0-9]{2})?)/g)]
+        .map((m) => parseFloat(m[1]))
+        .filter((n) => Number.isFinite(n) && n > 5 && n < 5000)
+        .slice(0, 60);
+      prices.push(...roughMatches);
+    } else {
+      prices.push(...pagePrices);
+    }
+
+    if (prices.length >= maxSamples) break;
   }
+
+  if (prices.length > maxSamples) prices.length = maxSamples;
 
   if (!prices.length) {
     return {
@@ -434,11 +526,7 @@ function isSpecificFashionTerm(term) {
   const words = t.split(/\s+/).filter(Boolean);
   if (words.length < 2) return false;
 
-  const apparelNouns = [
-    'jacket', 'coat', 'hoodie', 'sweatshirt', 'sweater', 'cardigan', 'tee',
-    't-shirt', 'shirt', 'pants', 'jeans', 'trousers', 'skirt', 'dress',
-    'boots', 'sneakers', 'loafer', 'bag', 'vest', 'parka', 'anorak'
-  ];
+  const apparelNouns = STYLE_PRODUCT_NOUNS;
   const hasApparelNoun = apparelNouns.some((n) => t.includes(n));
   if (!hasApparelNoun) return false;
 
@@ -471,11 +559,44 @@ function hasStructuredFashionPattern(term) {
   const t = String(term || '').toLowerCase();
   const apparelNounPattern = /\b(jacket|coat|hoodie|sweatshirt|sweater|cardigan|tee|t-shirt|shirt|pants|jeans|trousers|skirt|dress|boots?|sneakers?|loafers?|bag|vest|parka|anorak)\b/;
   const qualifierPattern = /\b(vintage|oversized|cropped|wide-leg|high-waisted|double knee|cargo|graphic|leather|suede|wool|mohair|denim|selvedge|chunky|platform|chelsea|tabi|retro|boxy|distressed|washed|faded|tailored|raw|ripstop|nylon|corduroy|cashmere|knit|quilted|puffer|barn|moto|trench|track|parachute)\b/;
-  const brandPattern = /\b(arc'?teryx|arcteryx|carhartt|salomon|nike|adidas|new balance|patagonia|north face|levis?|wrangler|dickies|coach|gucci|prada|bottega|margiela)\b/;
+  const brandPattern = /\b(arc'?teryx|arcteryx|carhartt|salomon|nike|adidas|new balance|patagonia|north face|levis?|wrangler|dickies|coach|gucci|prada|bottega|margiela|missguided|forever\s*21|asos|mango|reformation|urban outfitters|pacsun|old navy|banana republic)\b/;
   const hasNoun = apparelNounPattern.test(t);
   const hasQualifier = qualifierPattern.test(t);
   const hasBrand = brandPattern.test(t);
   return (hasNoun && hasQualifier) || (hasNoun && hasBrand);
+}
+
+function hasStrongTrendSpecificity(term) {
+  const t = String(term || '').toLowerCase();
+  const words = t.split(/\s+/).filter(Boolean);
+  const hasNoun = /\b(jacket|coat|hoodie|sweatshirt|sweater|cardigan|tee|t-shirt|shirt|pants|jeans|trousers|skirt|dress|boots?|sneakers?|loafers?|bag|vest|parka|anorak)\b/.test(t);
+  if (!hasNoun) return false;
+
+  const brand = inferBrandFromTerm(term);
+  if (brand) return true;
+
+  const strongSignals = [
+    'double knee', 'carpenter', 'selvedge', 'gore-tex', 'tabi', 'mohair',
+    'colorblock', 'shearling', 'mesh', 'drkshdw', 'beta lt', 'xt-6',
+    'ultraboost', 'samba', 'air force 1', 'air max', 'joan of arctic'
+  ];
+  if (strongSignals.some((s) => t.includes(s))) return true;
+
+  const qualifierPattern = /\b(vintage|oversized|cropped|wide-leg|high-waisted|cargo|graphic|leather|suede|wool|denim|chunky|platform|chelsea|retro|boxy|distressed|washed|faded|tailored|raw|ripstop|nylon|corduroy|cashmere|knit|quilted|puffer|barn|moto|trench)\b/g;
+  const qualifierHits = [...t.matchAll(qualifierPattern)].length;
+  if (qualifierHits >= 2 && words.length >= 3) return true;
+
+  return false;
+}
+
+function hasStyleProductNoun(term) {
+  const t = String(term || '').toLowerCase();
+  return STYLE_PRODUCT_NOUNS.some((noun) => t.includes(noun));
+}
+
+function isGenericStyleOnlyTerm(term) {
+  const normalized = normalizeTrendTerm(term).toLowerCase();
+  return GENERIC_STYLE_ONLY_TERMS.has(normalized);
 }
 
 function isEditorialNoiseTerm(term) {
@@ -516,7 +637,22 @@ function isEditorialNoiseTerm(term) {
     'spring 20',
     'summer 20',
     'fall 20',
-    'winter 20'
+    'winter 20',
+    "everyone's",
+    "here's",
+    'we tested',
+    'our favorite',
+    'our favorites',
+    'ways to wear',
+    'ways to style',
+    'why ',
+    'what ',
+    'need to know',
+    'are here to stay',
+    'is cozy',
+    'is timeless',
+    'is the new',
+    'fashion editors'
   ];
   if (blockedPhrases.some((p) => t.includes(p))) return true;
   if (/\b20\d{2}\b/.test(t)) return true;
@@ -535,20 +671,36 @@ function isBlockedNonFashionTerm(term) {
 }
 
 function evaluateTrendTerm(term) {
+  const verdict = classifyTrendTerm(term);
+  return { ok: verdict.ok, reason: verdict.reason };
+}
+
+function classifyTrendTerm(term) {
   const cleaned = String(term || '').trim();
-  if (!cleaned) return { ok: false, reason: 'empty' };
-  if (cleaned.length < 4) return { ok: false, reason: 'too_short' };
-  if (cleaned.length > 60) return { ok: false, reason: 'too_long' };
-  if (isEditorialNoiseTerm(cleaned)) return { ok: false, reason: 'editorial_noise' };
+  if (!cleaned) return { ok: false, reason: 'empty', type: 'rejected', brand: null };
+  if (cleaned.length < 4) return { ok: false, reason: 'too_short', type: 'rejected', brand: null };
+  if (cleaned.length > 60) return { ok: false, reason: 'too_long', type: 'rejected', brand: null };
+  if (isEditorialNoiseTerm(cleaned)) return { ok: false, reason: 'editorial_noise', type: 'rejected', brand: null };
   if (/\b(from|to|for|with|and|or|vs)\b/i.test(cleaned) && cleaned.split(/\s+/).length >= 4) {
-    return { ok: false, reason: 'headline_phrase' };
+    return { ok: false, reason: 'headline_phrase', type: 'rejected', brand: null };
   }
-  if (cleaned.split(/\s+/).length > 6) return { ok: false, reason: 'too_many_words' };
-  if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion' };
-  if (!isFashionTerm(cleaned)) return { ok: false, reason: 'no_fashion_keyword' };
-  if (!isSpecificFashionTerm(cleaned)) return { ok: false, reason: 'not_specific_enough' };
-  if (!hasStructuredFashionPattern(cleaned)) return { ok: false, reason: 'not_structured_entity' };
-  return { ok: true, reason: 'accepted' };
+  if (cleaned.split(/\s+/).length > 6) return { ok: false, reason: 'too_many_words', type: 'rejected', brand: null };
+  if (isBlockedNonFashionTerm(cleaned)) return { ok: false, reason: 'blocked_non_fashion', type: 'rejected', brand: null };
+  if (!isFashionTerm(cleaned)) return { ok: false, reason: 'no_fashion_keyword', type: 'rejected', brand: null };
+  const brand = inferBrandFromTerm(cleaned);
+  if (brand && !hasStyleProductNoun(cleaned)) {
+    return { ok: true, reason: 'accepted_brand_only', type: 'brand', brand };
+  }
+  if (!hasStyleProductNoun(cleaned)) return { ok: false, reason: 'no_product_noun', type: 'rejected', brand: null };
+  if (!isSpecificFashionTerm(cleaned)) return { ok: false, reason: 'not_specific_enough', type: 'rejected', brand: null };
+  if (!hasStructuredFashionPattern(cleaned)) return { ok: false, reason: 'not_structured_entity', type: 'rejected', brand: null };
+  if (!hasStrongTrendSpecificity(cleaned)) return { ok: false, reason: 'too_generic_for_trend', type: 'rejected', brand: null };
+  if (!brand && isGenericStyleOnlyTerm(cleaned)) {
+    return { ok: false, reason: 'generic_style_only', type: 'rejected', brand: null };
+  }
+
+  const trendType = brand ? 'brand_style' : 'style';
+  return { ok: true, reason: 'accepted', type: trendType, brand };
 }
 
 function shouldUseTrendTerm(term) {
@@ -586,34 +738,16 @@ function normalizeTrendTerm(term) {
 
 function inferBrandFromTerm(term) {
   const t = String(term || '').toLowerCase();
-  const brandMatchers = [
-    { label: "Arc'teryx", patterns: [/\barc['’]?teryx\b/, /\barcteryx\b/] },
-    { label: 'Carhartt', patterns: [/\bcarhartt\b/] },
-    { label: 'Salomon', patterns: [/\bsalomon\b/] },
-    { label: 'Nike', patterns: [/\bnike\b/] },
-    { label: 'Adidas', patterns: [/\badidas\b/] },
-    { label: 'New Balance', patterns: [/\bnew\s+balance\b/] },
-    { label: 'Patagonia', patterns: [/\bpatagonia\b/] },
-    { label: 'The North Face', patterns: [/\bnorth\s+face\b/] },
-    { label: "Levi's", patterns: [/\blevi['’]?s?\b/] },
-    { label: 'Stussy', patterns: [/\bstussy\b/] },
-    { label: 'Supreme', patterns: [/\bsupreme\b/] }
-  ];
-
-  for (const matcher of brandMatchers) {
+  for (const matcher of BRAND_LEXICON) {
     if (matcher.patterns.some((pattern) => pattern.test(t))) return matcher.label;
   }
   return null;
 }
 
 function inferTrack(term, brandName) {
-  if (brandName) return 'Brand';
-  const t = String(term || '').toLowerCase();
-  const styleHints = [
-    'vintage', 'y2k', '90s', 'workwear', 'utility', 'double knee',
-    'wide-leg', 'high-waisted', 'graphic', 'oversized', 'cargo', 'distressed'
-  ];
-  if (styleHints.some((hint) => t.includes(hint))) return 'Style Category';
+  const verdict = classifyTrendTerm(term);
+  if (verdict.ok && verdict.type === 'brand_style') return 'Brand + Style';
+  if (verdict.ok && verdict.type === 'brand') return 'Brand';
   return 'Style Category';
 }
 
@@ -1073,7 +1207,7 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
   let created = 0;
   for (const term of newTerms) {
     try {
-      const termVerdict = evaluateTrendTerm(term);
+      const termVerdict = classifyTrendTerm(term);
       if (!termVerdict.ok) {
         await writeTrendRejectionLogs([{
           collector_source: 'seed_merge',
@@ -1123,8 +1257,12 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
         .upsert(
           [{
             trend_name: term,
-            track: inferTrack(term, inferBrandFromTerm(term)),
-            hook_brand: inferBrandFromTerm(term),
+            track: termVerdict.type === 'brand'
+              ? 'Brand'
+              : termVerdict.type === 'brand_style'
+                ? 'Brand + Style'
+                : 'Style Category',
+            hook_brand: termVerdict.brand,
             market_sentiment: 'AI + eBay validated trend candidate.',
             ebay_sample_count: sampleCount,
             google_trend_hits: googleTrendHit ? 1 : 0,
@@ -1346,7 +1484,7 @@ async function syncMarketPulse() {
 
     for (const signal of signals) {
       console.log(`🔍 Syncing: ${signal.trend_name}`);
-      const trendVerdict = evaluateTrendTerm(signal.trend_name);
+      const trendVerdict = classifyTrendTerm(signal.trend_name);
       if (!trendVerdict.ok) {
         await writeTrendRejectionLogs([{
           collector_source: 'market_signal_update',
@@ -1440,8 +1578,12 @@ async function syncMarketPulse() {
       const { error: upError } = await supabase
         .from('market_signals')
         .update({ 
-          track: inferTrack(signal.trend_name, inferBrandFromTerm(signal.trend_name)),
-          hook_brand: signal.hook_brand || inferBrandFromTerm(signal.trend_name),
+          track: trendVerdict.type === 'brand'
+            ? 'Brand'
+            : trendVerdict.type === 'brand_style'
+              ? 'Brand + Style'
+              : 'Style Category',
+          hook_brand: trendVerdict.brand || signal.hook_brand || null,
           ebay_sample_count: sampleCount,
           google_trend_hits: googleTrendHit ? 1 : 0,
           ai_corpus_hits: corpusHit ? 1 : 0,
