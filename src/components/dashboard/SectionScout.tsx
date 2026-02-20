@@ -1605,27 +1605,17 @@ export default function SectionScout({
                      </span>
                    </div>
                  )}
-                 <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest flex items-center mb-2 italic"><Info size={14} className="mr-2" /> Brand Intel:</p>
-                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed max-h-16 overflow-hidden">{node.intel}</p>
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-1 mb-2 italic"><CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                  {(node.what_to_buy || []).slice(0, 5).map((item: string, i: number) => (
+                  {(node.what_to_buy || []).slice(0, 3).map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                       {toTargetBullet(item, "brand")}
                     </li>
                   ))}
                  </ul>
-                 <div className="mt-4 rounded-2xl border border-emerald-500/15 bg-white/60 dark:bg-slate-900/40 p-3">
-                   <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600 mb-1">Decision Snapshot</p>
-                   <ul className="list-disc pl-5 space-y-1">
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Evidence quality: {node.evidence_quality || "Narrow"}</li>
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Expected hold time: {node.hold_time || "Medium (2-6 weeks)"}</li>
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Buy cap mode: {node.buy_cap_mode || "Strict"}</li>
-                     {Array.isArray(node.kill_switches) && node.kill_switches[0] && (
-                       <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{node.kill_switches[0]}</li>
-                     )}
-                   </ul>
-                 </div>
+                 <p className="mt-3 text-[10px] font-black text-slate-500 dark:text-slate-300">
+                   {`Evidence ${node.evidence_quality || "Narrow"} • Hold ${node.hold_time || "Medium (2-6 weeks)"} • ${node.buy_cap_mode || "Strict"} cap`}
+                 </p>
               </div>
               )}
               <div className="mt-auto space-y-4">
@@ -1634,7 +1624,6 @@ export default function SectionScout({
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
-                  {node.pricing_assumptions && <p className="mt-1 text-[9px] font-bold text-slate-500">{node.pricing_assumptions}</p>}
                 </div>
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
@@ -1666,11 +1655,6 @@ export default function SectionScout({
                       <span className="text-[10px] font-black uppercase tracking-widest">View Photos</span>
                    </a>
                 </div>
-                {node.collectorRunAge && (
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                    Last scraper update: {node.collectorRunAge}
-                  </p>
-                )}
                 <button onClick={(e) => { e.stopPropagation(); onAdd(node); }} className="w-full py-5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-2xl font-black uppercase italic text-xs tracking-widest hover:bg-emerald-500 transition-all shadow-xl flex items-center justify-center gap-3">
                   <Plus size={18} /> Queue for Sourcing
                 </button>
@@ -1779,43 +1763,29 @@ export default function SectionScout({
                      </span>
                    </div>
                  )}
-                 <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center mb-2 italic">
-                   <Info size={14} className="mr-2" /> Trend Intel:
-                 </p>
-                 <p className="text-[12px] font-bold text-slate-500 dark:text-slate-400 italic leading-relaxed mb-4 max-h-16 overflow-hidden">
-                   {node.intel}
-                 </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-3 italic"><CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets:</p>
                  <ul className="list-disc pl-5 space-y-2">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 5).map((item: string, i: number) => (
+                   {node.what_to_buy && node.what_to_buy.slice(0, 3).map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
                        {toTargetBullet(item, "style")}
                      </li>
                    ))}
                  </ul>
-                 <div className="mt-4 rounded-2xl border border-blue-500/15 bg-white/60 dark:bg-slate-900/40 p-3">
-                   <p className="text-[9px] font-black uppercase tracking-widest text-blue-500 mb-1">Decision Snapshot</p>
-                   <ul className="list-disc pl-5 space-y-1">
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Evidence quality: {node.evidence_quality || "Narrow"}</li>
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Expected hold time: {node.hold_time || "Medium (2-6 weeks)"}</li>
-                     <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Buy cap mode: {node.buy_cap_mode || "Strict"}</li>
-                     {Array.isArray(node.kill_switches) && node.kill_switches[0] && (
-                       <li className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{node.kill_switches[0]}</li>
-                     )}
-                   </ul>
-                 </div>
+                 <p className="mt-3 text-[10px] font-black text-slate-500 dark:text-slate-300">
+                   {`Evidence ${node.evidence_quality || "Narrow"} • Hold ${node.hold_time || "Medium (2-6 weeks)"} • ${node.buy_cap_mode || "Strict"} cap`}
+                 </p>
                  {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
                    <>
                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mt-4 mb-2 italic">
                        <Hash size={12} className="mr-2 text-blue-500" /> Brands to Watch:
                      </p>
-                     <ul className="list-disc pl-5 space-y-1.5">
+                     <div className="flex flex-wrap gap-2">
                        {node.brands_to_watch.slice(0, 3).map((brand: string, i: number) => (
-                         <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
+                         <span key={i} className="px-2 py-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 text-[10px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-300">
                            {brand}
-                         </li>
+                         </span>
                        ))}
-                     </ul>
+                     </div>
                    </>
                  )}
               </div>
@@ -1827,7 +1797,6 @@ export default function SectionScout({
                   <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
-                  {node.pricing_assumptions && <p className="mt-1 text-[9px] font-bold text-slate-500">{node.pricing_assumptions}</p>}
                 </div>
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Why This Score</p>
@@ -1857,11 +1826,6 @@ export default function SectionScout({
                       <span className="text-[10px] font-black uppercase tracking-widest">View Photos</span>
                    </a>
                 </div>
-                {node.collectorRunAge && (
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                    Last scraper update: {node.collectorRunAge}
-                  </p>
-                )}
                 <button onClick={(e) => { e.stopPropagation(); onAdd(node); }} className="w-full py-5 bg-blue-500 text-white rounded-2xl font-black uppercase italic text-xs tracking-widest hover:bg-slate-900 transition-all shadow-xl flex items-center justify-center gap-3">
                   <Plus size={18} /> Queue for Sourcing
                 </button>
