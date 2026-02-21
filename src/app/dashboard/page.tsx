@@ -24,6 +24,7 @@ import type {
   StyleProfileGenerateResponse,
 } from "@/lib/types";
 import { parseStyleProfileFromNode } from "@/lib/styleGuidance";
+import { FadeIn } from "@/components/ui/motion";
 
 const NULL_WARNING_THRESHOLD = 0.5;
 const TRUNK_COLLAPSED_STORAGE_KEY = "thriftpulse_trunk_collapsed_v1";
@@ -457,12 +458,13 @@ export default function DashboardPage() {
   if (!mounted) return null;
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-slate-100 overflow-hidden font-sans transition-colors duration-500">
+    <div className="relative flex h-screen w-full bg-[radial-gradient(circle_at_10%_-10%,rgba(16,185,129,0.12),transparent_35%),radial-gradient(circle_at_85%_5%,rgba(59,130,246,0.10),transparent_32%),linear-gradient(135deg,#eef6ff_0%,#f8fafc_45%,#eefdf5_100%)] dark:bg-[radial-gradient(circle_at_10%_-10%,rgba(16,185,129,0.16),transparent_35%),radial-gradient(circle_at_85%_5%,rgba(59,130,246,0.14),transparent_32%),linear-gradient(135deg,#020617_0%,#0b1020_52%,#03121a_100%)] text-slate-900 dark:text-slate-100 overflow-hidden font-sans transition-colors duration-500">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.22),transparent_20%),radial-gradient(circle_at_50%_100%,rgba(16,185,129,0.08),transparent_45%)] dark:bg-[linear-gradient(to_bottom,rgba(255,255,255,0.03),transparent_20%),radial-gradient(circle_at_50%_100%,rgba(16,185,129,0.12),transparent_45%)]" />
       
       {/* SIDEBAR NAVIGATION */}
-      <aside className="w-72 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col p-8">
+      <aside className="relative z-10 w-72 h-full bg-white/80 dark:bg-slate-900/85 backdrop-blur-xl border-r border-white/70 dark:border-slate-700/70 shadow-[inset_-1px_0_0_rgba(255,255,255,0.35)] dark:shadow-[inset_-1px_0_0_rgba(148,163,184,0.12)] flex flex-col p-8">
         <div className="flex items-center space-x-3 mb-10 pl-2">
-            <div className="h-10 w-10 bg-emerald-500 rounded-xl flex items-center justify-center text-slate-900 font-black italic shadow-lg shrink-0 text-xl">T</div>
+            <div className="h-10 w-10 bg-gradient-to-br from-emerald-400 via-emerald-500 to-cyan-400 rounded-xl flex items-center justify-center text-slate-900 font-black italic shadow-[0_10px_30px_rgba(16,185,129,0.35)] shrink-0 text-xl">T</div>
             <h1 className="text-xl font-black italic uppercase tracking-tighter">ThriftPulse</h1>
         </div>
         
@@ -494,13 +496,16 @@ export default function DashboardPage() {
       </aside>
 
       {/* MAIN CONTENT */}
-      <main className="flex-1 h-full overflow-y-auto p-16 relative">
-        <header className="mb-12 text-left">
+      <main className="relative z-10 flex-1 h-full overflow-y-auto p-10 xl:p-14">
+        <FadeIn>
+          <header className="mb-10 text-left rounded-[2rem] border border-white/70 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/70 backdrop-blur-md p-6 xl:p-8 shadow-[0_20px_40px_rgba(15,23,42,0.06)] dark:shadow-[0_24px_44px_rgba(2,6,23,0.45)]">
           <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500 mb-2 italic">Sector: 30064 // {activeView.toUpperCase()}</h2>
-          <h3 className="text-5xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white">
-             {viewLabels[activeView]}
+          <h3 className="text-4xl xl:text-5xl font-black italic uppercase tracking-tight text-slate-900 dark:text-white">
+             <span className="bg-gradient-to-r from-slate-900 via-slate-700 to-emerald-600 bg-clip-text text-transparent dark:from-white dark:via-slate-100 dark:to-emerald-300">
+               {viewLabels[activeView]}
+             </span>
           </h3>
-          <div className="mt-6 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap items-center gap-2">
+          <div className="mt-5 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-white/80 dark:bg-slate-900/75 flex flex-wrap items-center gap-2">
             <button
               onClick={() => fetchRealData()}
               className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-600 border border-emerald-500/30 hover:bg-emerald-500/20 transition-colors"
@@ -563,6 +568,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </header>
+        </FadeIn>
 
         <div className="animate-in fade-in duration-500">
           {activeView === "overview" && (
@@ -856,7 +862,7 @@ export default function DashboardPage() {
       </main>
 
       {/* RIGHT SIDEBAR */}
-      <aside className={`${isTrunkCollapsed ? "w-16" : "w-96"} h-full bg-slate-100 dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 flex flex-col z-40 relative transition-all duration-200`}>
+      <aside className={`${isTrunkCollapsed ? "w-16" : "w-96"} h-full bg-white/75 dark:bg-slate-950/80 backdrop-blur-xl border-l border-white/70 dark:border-slate-700/70 flex flex-col z-40 relative transition-all duration-200`}>
         <button
           onClick={() => setIsTrunkCollapsed((v) => !v)}
           className="absolute -left-3 top-6 h-7 w-7 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex items-center justify-center z-50 shadow"
@@ -957,7 +963,7 @@ function NavButton({ label, id, icon: Icon, active, set, color }: any) {
   const isActive = active === id;
   const colorMap: any = { emerald: "text-emerald-500", blue: "text-blue-500", purple: "text-purple-500", amber: "text-amber-500", rose: "text-rose-500" };
   return (
-    <button onClick={() => set(id)} className={`w-full flex items-center p-4 rounded-2xl transition-all ${isActive ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-xl' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+    <button onClick={() => set(id)} className={`w-full flex items-center p-4 rounded-2xl border transition-all ${isActive ? 'bg-gradient-to-r from-slate-900 to-slate-800 dark:from-white dark:to-slate-100 text-white dark:text-slate-950 shadow-[0_10px_28px_rgba(15,23,42,0.22)] border-transparent' : 'bg-white/30 dark:bg-slate-900/35 border-white/60 dark:border-slate-700/40 hover:bg-white/65 dark:hover:bg-slate-800/70'}`}>
       <Icon size={20} className={isActive ? "" : colorMap[color]} />
       <span className="ml-4 text-xs font-black uppercase tracking-tight">{label}</span>
     </button>
@@ -966,6 +972,6 @@ function NavButton({ label, id, icon: Icon, active, set, color }: any) {
 
 function ThemeIcon({ icon: Icon, active, onClick }: any) {
   return (
-    <button onClick={onClick} className={`p-2.5 rounded-xl transition-all ${active ? 'bg-white dark:bg-slate-700 text-emerald-500 shadow-md border dark:border-slate-600' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'}`}><Icon size={18} /></button>
+    <button onClick={onClick} className={`p-2.5 rounded-xl transition-all ${active ? 'bg-white dark:bg-slate-700 text-emerald-500 shadow-md border border-slate-200 dark:border-slate-600' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'}`}><Icon size={18} /></button>
   );
 }
