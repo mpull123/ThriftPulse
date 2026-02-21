@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTheme } from "next-themes";
 import { supabase } from "@/lib/supabase";
 
@@ -18,108 +18,44 @@ import {
   LogOut, Map, LayoutGrid, Hash, Package, X, Briefcase, Sun, Moon, Monitor, CheckSquare, Info, ChevronLeft, ChevronRight
 } from "lucide-react";
 import Link from "next/link";
-import type { CollectorJob, CompCheck } from "@/lib/types";
+import type {
+  CollectorJob,
+  CompCheck,
+  StyleProfileGenerateResponse,
+} from "@/lib/types";
+import { parseStyleProfileFromNode } from "@/lib/styleGuidance";
 
 const NULL_WARNING_THRESHOLD = 0.5;
 const TRUNK_COLLAPSED_STORAGE_KEY = "thriftpulse_trunk_collapsed_v1";
 
-function splitIntelToBullets(intel: string): string[] {
-  return String(intel || "")
-    .split(/[.?!]\s+/)
-    .map((part) => part.trim().replace(/[.?!]$/, ""))
-    .filter(Boolean);
+function getCompDepthLabelFromCount(sampleCount: number): "Deep" | "Strong" | "Usable" | "Light" | "Thin" | "None" {
+  const n = Number(sampleCount || 0);
+  if (n >= 160) return "Deep";
+  if (n >= 90) return "Strong";
+  if (n >= 40) return "Usable";
+  if (n >= 12) return "Light";
+  if (n > 0) return "Thin";
+  return "None";
 }
 
-function normalizeLabel(value: string): string {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+function getSourceMixLabelLocal(sourceCounts: any): "Broad" | "Multi" | "Single" | "None" {
+  const types =
+    (Number(sourceCounts?.ebay || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.google || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.ai || 0) > 0 ? 1 : 0) +
+    (Number(sourceCounts?.discovery || 0) > 0 ? 1 : 0);
+  if (types >= 3) return "Broad";
+  if (types === 2) return "Multi";
+  if (types === 1) return "Single";
+  return "None";
 }
 
-function buildNodeSuggestions(node: any): string[] {
-  const nodeName = String(node?.name || "").trim();
-  const lowerName = nodeName.toLowerCase();
-  const rawList = Array.isArray(node?.what_to_buy) ? node.what_to_buy : [];
-
-  const mapped = rawList
-    .map((item: string) => String(item || "").trim())
-    .filter(Boolean)
-    .map((item: string) => {
-      if (normalizeLabel(item) !== normalizeLabel(nodeName)) return item;
-
-      if (lowerName.includes("cardigan")) {
-        return "Look for cardigan variants: chunky knit, cable knit, and wool-blend versions with strong condition.";
-      }
-      if (lowerName.includes("jacket")) {
-        return "Look for jacket variants: cropped cuts, heavyweight fabric, and clean hardware with low wear.";
-      }
-      if (lowerName.includes("jean") || lowerName.includes("denim")) {
-        return "Look for denim variants: high-rise, straight-leg, and faded-wash pairs with minimal damage.";
-      }
-      if (lowerName.includes("boot") || lowerName.includes("sneaker")) {
-        return "Look for footwear variants: premium materials, clean soles, and high-demand colorways.";
-      }
-      return `Look for variations of ${nodeName}: stronger materials, cleaner condition, and distinctive silhouettes.`;
-    });
-
-  if (mapped.length > 0) return mapped;
-  if (!nodeName) return [];
-  return [`Look for variations of ${nodeName}: prioritize quality construction and clean condition.`];
-}
-
-function uniqStrings(items: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of items) {
-    const v = String(raw || "").trim();
-    if (!v) continue;
-    const key = v.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(v);
-  }
-  return out;
-}
-
-function buildNodeSnapshotBullets(node: any): string[] {
-  const name = String(node?.name || "").trim();
-  const t = name.toLowerCase();
-  const targetBuy = Number(node?.target_buy ?? node?.entry_price ?? 0);
-  const compLow = Number(node?.comp_low || 0);
-  const compHigh = Number(node?.comp_high || 0);
-  const sources = node?.source_counts || {};
-  const sourceTypes =
-    (Number(sources?.ebay || 0) > 0 ? 1 : 0) +
-    (Number(sources?.google || 0) > 0 ? 1 : 0) +
-    (Number(sources?.ai || 0) > 0 ? 1 : 0);
-
-  const bullets: string[] = [];
-  if (t.includes("jacket") || t.includes("coat") || t.includes("anorak")) {
-    bullets.push(`${name}: prioritize zipper track, lining integrity, and cuff wear first.`);
-  } else if (t.includes("jean") || t.includes("denim") || t.includes("cargo") || t.includes("pants")) {
-    bullets.push(`${name}: inspect inseam/crotch/knee wear before considering style details.`);
-  } else if (t.includes("boot") || t.includes("sneaker") || t.includes("shoe")) {
-    bullets.push(`${name}: inspect outsole wear, heel drag, and upper structure.`);
-  } else if (t.includes("hoodie") || t.includes("sweatshirt") || t.includes("cardigan") || t.includes("sweater")) {
-    bullets.push(`${name}: check cuffs, collar shape, pilling, and shrinkage signs.`);
-  } else {
-    bullets.push(`${name}: prioritize clean condition and strong construction over trend hype.`);
-  }
-
-  if (Number.isFinite(targetBuy) && targetBuy > 0) {
-    bullets.push(`Hard buy cap: $${Math.round(targetBuy)} unless condition/tags are exceptional.`);
-  }
-  if (compLow > 0 || compHigh > 0) {
-    bullets.push(`Comp spread: $${Math.round(compLow)}-$${Math.round(compHigh)}. Favor pieces that can land near the upper third.`);
-  }
-  if (sourceTypes <= 1) {
-    bullets.push("Evidence is narrow-source right now. Prioritize conservative buys.");
-  } else {
-    bullets.push(`Evidence spans ${sourceTypes} source types, which strengthens confidence.`);
-  }
-
-  return uniqStrings(bullets).slice(0, 4);
+function buildCompactEvidenceLine(node: any): string {
+  const depth = getCompDepthLabelFromCount(Number(node?.source_counts?.ebay || 0));
+  const mix = getSourceMixLabelLocal(node?.source_counts);
+  const compAge = String(node?.compAgeLabel || "Unknown");
+  const net = Number(node?.expected_profit || 0);
+  return `Comps ${compAge} • ${depth} depth • Mix ${mix} • Net +$${Math.max(0, Math.round(net))}`;
 }
 
 function logSchemaHealth(
@@ -159,6 +95,9 @@ export default function DashboardPage() {
   const [isDemoMode, setIsDemoMode] = useState(false); 
   const [selectedItem, setSelectedItem] = useState<any>(null); 
   const [selectedNode, setSelectedNode] = useState<any>(null); 
+  const [styleProfileLoading, setStyleProfileLoading] = useState(false);
+  const [styleProfileLoadError, setStyleProfileLoadError] = useState<string | null>(null);
+  const styleProfileInFlightRef = useRef<Set<string>>(new Set());
   const [trunk, setTrunk] = useState<any[]>([]);
   const [crossPageFocus, setCrossPageFocus] = useState("");
   const [isTrunkCollapsed, setIsTrunkCollapsed] = useState(true);
@@ -201,6 +140,115 @@ export default function DashboardPage() {
     if (!mounted) return;
     localStorage.setItem(TRUNK_COLLAPSED_STORAGE_KEY, isTrunkCollapsed ? "1" : "0");
   }, [isTrunkCollapsed, mounted]);
+
+  useEffect(() => {
+    const node = selectedNode;
+    if (!node || node.type !== "style") {
+      setStyleProfileLoading(false);
+      setStyleProfileLoadError(null);
+      return;
+    }
+
+    const signalId = String(node?.signal_id || "").trim();
+    if (!signalId) {
+      setStyleProfileLoading(false);
+      setStyleProfileLoadError(null);
+      return;
+    }
+
+    const parsed = parseStyleProfileFromNode(node);
+    if (parsed.ok) {
+      setStyleProfileLoading(false);
+      setStyleProfileLoadError(null);
+      return;
+    }
+    if (parsed.state === "failed") {
+      setStyleProfileLoading(false);
+      setStyleProfileLoadError(parsed.reason || "On-demand generation failed.");
+      return;
+    }
+    if (styleProfileInFlightRef.current.has(signalId)) return;
+
+    styleProfileInFlightRef.current.add(signalId);
+    setStyleProfileLoading(true);
+    setStyleProfileLoadError(null);
+
+    const payload = {
+      signal_id: signalId,
+      title: String(node?.name || "").trim(),
+      track: String(node?.source || node?.track || "Style Category").trim(),
+      hook_brand: String(node?.brandRef || "").trim() || null,
+    };
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/style-profile/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const json = (await response.json()) as StyleProfileGenerateResponse & { error?: string };
+        if (!response.ok || !json?.ok || !json?.style_profile_json) {
+          const reason = String(
+            json?.style_profile_error ||
+              json?.error ||
+              `on_demand_style_profile_error http_${response.status}`
+          ).trim();
+          setStyleProfileLoadError(reason);
+          setSelectedNode((prev: any) =>
+            prev && String(prev.signal_id || "") === signalId
+              ? {
+                  ...prev,
+                  style_profile_status: "error",
+                  style_profile_error: reason,
+                }
+              : prev
+          );
+          setRealSignals((prev) =>
+            prev.map((row: any) =>
+              String(row?.id || "") === signalId
+                ? {
+                    ...row,
+                    style_profile_status: "error",
+                    style_profile_error: reason,
+                    style_profile_updated_at: new Date().toISOString(),
+                  }
+                : row
+            )
+          );
+          return;
+        }
+
+        const patch = {
+          style_profile_json: json.style_profile_json,
+          style_profile_status: json.style_profile_status,
+          style_profile_error: json.style_profile_error,
+          style_profile_updated_at: json.style_profile_updated_at,
+        };
+        setSelectedNode((prev: any) =>
+          prev && String(prev.signal_id || "") === signalId ? { ...prev, ...patch } : prev
+        );
+        setRealSignals((prev) =>
+          prev.map((row: any) => (String(row?.id || "") === signalId ? { ...row, ...patch } : row))
+        );
+      } catch (error: any) {
+        const reason = `on_demand_style_profile_error ${String(error?.message || "unknown_error")}`;
+        setStyleProfileLoadError(reason);
+        setSelectedNode((prev: any) =>
+          prev && String(prev.signal_id || "") === signalId
+            ? {
+                ...prev,
+                style_profile_status: "error",
+                style_profile_error: reason,
+              }
+            : prev
+        );
+      } finally {
+        styleProfileInFlightRef.current.delete(signalId);
+        setStyleProfileLoading(false);
+      }
+    })();
+  }, [selectedNode]);
 
   // --- FETCH REAL SUPABASE DATA ---
   async function fetchRealData() {
@@ -403,6 +451,8 @@ export default function DashboardPage() {
     const status = String(j?.status || "").toLowerCase();
     return status === "success" || status === "completed" || status === "ok";
   }).length;
+  const selectedStyleProfile =
+    selectedNode && selectedNode.type === "style" ? parseStyleProfileFromNode(selectedNode) : null;
 
   if (!mounted) return null;
 
@@ -631,7 +681,7 @@ export default function DashboardPage() {
               )}
 
               <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Used Pricing (Card View)</h4>
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Used Pricing</h4>
                 <div className="grid grid-cols-3 gap-3 text-center">
                   <div>
                     <p className="text-[9px] font-black uppercase text-slate-400">Target Buy</p>
@@ -661,56 +711,82 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {(selectedNode.confidence_reason || selectedNode.last_updated_at || selectedNode.source_counts) && (
+              {selectedNode.type === "style" ? (
                 <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Why This Score</h4>
-                  {selectedNode.confidence_reason && (
-                    <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">{selectedNode.confidence_reason}</p>
-                  )}
-                  {selectedNode.source_counts && (
-                    <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                      Sources: eBay {selectedNode.source_counts.ebay || 0} • Google {selectedNode.source_counts.google || 0} • AI {selectedNode.source_counts.ai || 0}
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
+                    <CheckSquare size={14} className="mr-2" /> Style Guidance
+                  </h4>
+                  {styleProfileLoading ? (
+                    <p className="text-sm font-bold italic text-blue-600 dark:text-blue-300">
+                      Generating style guidance...
+                    </p>
+                  ) : selectedStyleProfile?.ok && selectedStyleProfile.profile ? (
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Styles to Find</p>
+                        <ul className="space-y-1.5">
+                          {selectedStyleProfile.profile.styles_to_find.map((item: string, i: number) => (
+                            <li key={`detail-style-${i}`} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                              <span className="mr-2 leading-5 text-blue-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Find These First</p>
+                        <ul className="space-y-1.5">
+                          {selectedStyleProfile.profile.find_these_first.map((item: string, i: number) => (
+                            <li key={`detail-first-${i}`} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                              <span className="mr-2 leading-5 text-blue-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Where to Check First</p>
+                        <ul className="space-y-1.5">
+                          {selectedStyleProfile.profile.where_to_check_first.map((item: string, i: number) => (
+                            <li key={`detail-zone-${i}`} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                              <span className="mr-2 leading-5 text-blue-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Pass If</p>
+                        <ul className="space-y-1.5">
+                          {selectedStyleProfile.profile.pass_if.map((item: string, i: number) => (
+                            <li key={`detail-pass-${i}`} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
+                              <span className="mr-2 leading-5 text-blue-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ) : selectedStyleProfile?.state === "failed" || styleProfileLoadError ? (
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">Style guidance unavailable</p>
+                      <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">
+                        {styleProfileLoadError || selectedStyleProfile?.reason || "On-demand generation failed. Try again shortly."}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">
+                      Style guidance will auto-generate when this node is opened.
                     </p>
                   )}
-                  <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                    Updated: {selectedNode.last_updated_at ? new Date(selectedNode.last_updated_at).toLocaleDateString() : "Unknown"} • Comps: {selectedNode.compAgeLabel || "Unknown"}
-                  </p>
                 </div>
-              )}
-
-              <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Node Snapshot</h4>
-                <ul className="list-disc pl-5 space-y-2">
-                  {buildNodeSnapshotBullets(selectedNode).map((line, i) => (
-                    <li key={i} className="text-sm font-medium italic text-slate-600 dark:text-slate-300 leading-relaxed">
-                      {line}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              {splitIntelToBullets(selectedNode.intel).length > 0 && (
-                <div>
+              ) : Array.isArray(selectedNode.what_to_buy) && selectedNode.what_to_buy.length > 0 ? (
+                <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
-                    <Info size={14} className="mr-2" /> Sourcing Intelligence
-                  </h4>
-                  <ul className="list-disc pl-5 space-y-1.5">
-                    {splitIntelToBullets(selectedNode.intel).slice(0, 3).map((line: string, i: number) => (
-                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-200 italic">
-                        {line}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {buildNodeSuggestions(selectedNode).length > 0 && (
-                <div>
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
-                    <CheckSquare size={14} className="mr-2" /> Top Targets (Same As Card)
+                    <CheckSquare size={14} className="mr-2" /> Sourcing Checklist
                   </h4>
                   <ul className="space-y-2">
-                    {buildNodeSuggestions(selectedNode).slice(0, 4).map((item: string, i: number) => (
+                    {selectedNode.what_to_buy.slice(0, 4).map((item: string, i: number) => (
                       <li key={i} className="flex items-start text-sm font-bold text-slate-700 dark:text-slate-200">
                         <span className="mr-2 leading-5 text-blue-500">•</span>
                         <span>{item}</span>
@@ -718,10 +794,10 @@ export default function DashboardPage() {
                     ))}
                   </ul>
                 </div>
-              )}
+              ) : null}
 
               {Array.isArray(selectedNode.brands_to_watch) && selectedNode.brands_to_watch.length > 0 && (
-                <div>
+                <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center">
                     <Hash size={14} className="mr-2" /> Brands to Watch
                   </h4>
@@ -733,6 +809,18 @@ export default function DashboardPage() {
                       </li>
                     ))}
                   </ul>
+                </div>
+              )}
+
+              {(selectedNode.last_updated_at || selectedNode.source_counts) && (
+                <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Evidence Read</h4>
+                  <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">
+                    {buildCompactEvidenceLine(selectedNode)}
+                  </p>
+                  <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    Updated: {selectedNode.last_updated_at ? new Date(selectedNode.last_updated_at).toLocaleDateString() : "Unknown"}
+                  </p>
                 </div>
               )}
 

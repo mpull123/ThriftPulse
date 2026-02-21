@@ -455,6 +455,38 @@ function inferStyleItemTypeForAI(title) {
   return 'mixed';
 }
 
+const STYLE_NOUNS_BY_TYPE = {
+  outerwear: ['jacket', 'coat', 'anorak', 'parka', 'blazer', 'trench', 'windbreaker', 'shell'],
+  bottoms: ['pants', 'jeans', 'trousers', 'cargo', 'chino', 'skirt', 'shorts', 'culotte'],
+  footwear: ['boots', 'boot', 'sneakers', 'sneaker', 'shoe', 'shoes', 'loafer', 'loafers', 'clog'],
+  knitwear: ['hoodie', 'sweater', 'cardigan', 'knit', 'crewneck', 'sweatshirt'],
+  bags: ['bag', 'tote', 'crossbody', 'handbag', 'backpack', 'satchel', 'messenger'],
+  dress: ['dress', 'maxi', 'midi', 'slip dress', 'gown'],
+  top: ['shirt', 'tee', 't-shirt', 'top', 'blouse', 'tank'],
+  mixed: [],
+};
+
+const MAINSTREAM_STYLE_BRANDS = [
+  'converse',
+  'adidas',
+  'nike',
+  'new balance',
+  'vans',
+  'reebok',
+  'dr martens',
+  'timberland',
+  'carhartt',
+  "levi's",
+  'levis',
+  'patagonia',
+  'north face',
+  'the north face',
+  'coach',
+  'sorel',
+  'salomon',
+  'puma',
+];
+
 function normalizeProfileLine(line) {
   return compactWhitespace(String(line || '').replace(/^[-*•]\s*/, '').trim());
 }
@@ -477,25 +509,76 @@ function isNearDuplicate(a, b) {
   return ratio >= 0.65;
 }
 
-function looksGenericStyleLine(line) {
-  const n = String(line || '').toLowerCase();
-  return (
+function normalizeCompareText(value) {
+  return compactWhitespace(String(value || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' '));
+}
+
+function inferLineItemTypes(line) {
+  const normalized = normalizeCompareText(line);
+  const out = new Set();
+  for (const [type, nouns] of Object.entries(STYLE_NOUNS_BY_TYPE)) {
+    if (type === 'mixed') continue;
+    if (nouns.some((noun) => normalized.includes(noun))) out.add(type);
+  }
+  return out;
+}
+
+function isLineCompatibleWithTitleType(line, titleType) {
+  if (!titleType || titleType === 'mixed') return true;
+  const lineTypes = inferLineItemTypes(line);
+  if (!lineTypes.size) return true;
+  return lineTypes.has(titleType);
+}
+
+function lineHasStyleCue(line) {
+  const normalized = normalizeCompareText(line);
+  const cueTokens = [
+    'cropped', 'oversized', 'wide leg', 'high waisted', 'high rise', 'straight leg', 'chunky',
+    'platform', 'colorblock', '90s', 'vintage', 'distressed', 'washed', 'raw hem', 'double knee',
+    'chelsea', 'tabi', 'lug sole', 'east west', 'crossbody', 'mini', 'maxi', 'midi', 'cargo',
+    'pleated', 'low rise', 'mid rise'
+  ];
+  return cueTokens.some((cue) => normalized.includes(cue)) || inferLineItemTypes(line).size > 0;
+}
+
+function looksGenericStyleLine(line, title, { allowGeneric = false } = {}) {
+  if (allowGeneric) return false;
+  const n = normalizeCompareText(line);
+  const t = normalizeCompareText(title);
+  if (!n) return true;
+  if (n === t) return true;
+  if (t && n.includes(t)) {
+    const extra = n.replace(t, '').trim().split(/\s+/).filter(Boolean);
+    if (extra.length <= 2) return true;
+  }
+  if (
     n.includes('quality piece') ||
     n.includes('check condition') ||
     n.includes('strong comps') ||
     n.includes('good fabric') ||
-    n.includes('recognizable silhouette')
-  );
+    n.includes('recognizable silhouette') ||
+    n.includes('quality construction') ||
+    n.includes('strong construction') ||
+    n.includes('clean condition over hype') ||
+    n.includes('match the core silhouette first')
+  ) return true;
+  return !lineHasStyleCue(line);
 }
 
-function sanitizeList(list, maxItems, { allowGeneric = false } = {}) {
+function countMainstreamBrands(line) {
+  const n = normalizeCompareText(line);
+  return MAINSTREAM_STYLE_BRANDS.filter((brand) => n.includes(normalizeCompareText(brand))).length;
+}
+
+function sanitizeList(list, maxItems, { allowGeneric = false, title = '', titleType = 'mixed' } = {}) {
   const out = [];
   const seen = [];
   for (const raw of Array.isArray(list) ? list : []) {
     const line = normalizeProfileLine(raw);
     if (!line) continue;
     if (line.length < 6 || line.length > 120) continue;
-    if (!allowGeneric && looksGenericStyleLine(line)) continue;
+    if (!isLineCompatibleWithTitleType(line, titleType)) continue;
+    if (looksGenericStyleLine(line, title, { allowGeneric })) continue;
     if (seen.some((s) => isNearDuplicate(s, line))) continue;
     seen.push(line);
     out.push(line);
@@ -504,11 +587,12 @@ function sanitizeList(list, maxItems, { allowGeneric = false } = {}) {
   return out;
 }
 
-function dedupeAcrossStyleSections(profile) {
-  const styles = sanitizeList(profile?.styles_to_find, 3);
-  const findFirstRaw = sanitizeList(profile?.find_these_first, 3);
-  const where = sanitizeList(profile?.where_to_check_first, 2, { allowGeneric: true });
-  const passIf = sanitizeList(profile?.pass_if, 2, { allowGeneric: true });
+function dedupeAcrossStyleSections(profile, title = '') {
+  const titleType = inferStyleItemTypeForAI(title);
+  const styles = sanitizeList(profile?.styles_to_find, 3, { title, titleType });
+  const findFirstRaw = sanitizeList(profile?.find_these_first, 3, { title, titleType });
+  const where = sanitizeList(profile?.where_to_check_first, 2, { title, titleType });
+  const passIf = sanitizeList(profile?.pass_if, 2, { title, titleType });
 
   const findFirst = [];
   for (const line of findFirstRaw) {
@@ -517,21 +601,47 @@ function dedupeAcrossStyleSections(profile) {
     if (findFirst.length >= 3) break;
   }
 
-  return {
+  let normalized = {
     item_type: ['outerwear', 'bottoms', 'footwear', 'knitwear', 'bags', 'dress', 'top', 'mixed'].includes(profile?.item_type)
       ? profile.item_type
-      : 'mixed',
+      : titleType,
     styles_to_find: styles,
     find_these_first: findFirst,
     where_to_check_first: where,
     pass_if: passIf,
     confidence_note: compactWhitespace(String(profile?.confidence_note || '')),
   };
+
+  const titleHasBrand = MAINSTREAM_STYLE_BRANDS.some((brand) =>
+    normalizeCompareText(title).includes(normalizeCompareText(brand))
+  );
+  const maxBrandLines = titleHasBrand ? 1 : 2;
+  let consumedBrands = 0;
+  const pruneBrandHeavy = (items, max) =>
+    items
+      .filter((line) => {
+        const hits = countMainstreamBrands(line);
+        if (!hits) return true;
+        if (consumedBrands >= maxBrandLines) return false;
+        consumedBrands += 1;
+        return true;
+      })
+      .slice(0, max);
+
+  normalized = {
+    ...normalized,
+    styles_to_find: pruneBrandHeavy(normalized.styles_to_find, 3),
+    find_these_first: pruneBrandHeavy(normalized.find_these_first, 3),
+    where_to_check_first: pruneBrandHeavy(normalized.where_to_check_first, 2),
+    pass_if: pruneBrandHeavy(normalized.pass_if, 2),
+  };
+  return normalized;
 }
 
 function isStyleProfileValid(profile) {
   if (!profile || typeof profile !== 'object') return false;
   if (!Array.isArray(profile.styles_to_find) || profile.styles_to_find.length === 0) return false;
+  if (!Array.isArray(profile.find_these_first) || profile.find_these_first.length === 0) return false;
   if (!Array.isArray(profile.where_to_check_first) || profile.where_to_check_first.length === 0) return false;
   if (!Array.isArray(profile.pass_if) || profile.pass_if.length === 0) return false;
   return true;
@@ -561,7 +671,7 @@ async function generateStyleProfileForTitle(title, context = {}) {
 
   const model = process.env.STYLE_PROFILE_MODEL || process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
   const systemPrompt =
-    'You are a resale sourcing strategist for used fashion. Return JSON only. Be concrete, in-store actionable, and avoid repeating the title. Keep each bullet specific.';
+    'You are a thrift sourcing operator for used fashion. Return JSON only. Output should tell a buyer what to look for in-store, not generic quality/construction advice.';
   const userPrompt = JSON.stringify({
     task: 'Generate structured style sourcing profile for a node card',
     title: cleanTitle,
@@ -569,15 +679,18 @@ async function generateStyleProfileForTitle(title, context = {}) {
     context,
     schema: {
       item_type: 'outerwear|bottoms|footwear|knitwear|bags|dress|top|mixed',
-      styles_to_find: 'array (max 3, each 6-120 chars)',
-      find_these_first: 'array (max 3, each 6-120 chars, should not duplicate styles_to_find)',
-      where_to_check_first: 'array (max 2, each 6-120 chars)',
-      pass_if: 'array (max 2, each 6-120 chars)',
+      styles_to_find: 'array (1-3, each 6-120 chars)',
+      find_these_first: 'array (1-3, each 6-120 chars, should not duplicate styles_to_find)',
+      where_to_check_first: 'array (1-2, each 6-120 chars)',
+      pass_if: 'array (1-2, each 6-120 chars)',
       confidence_note: 'string optional, <= 140 chars',
     },
     constraints: [
       'No exact or near-duplicate items across sections',
-      'No generic filler unless title is ambiguous',
+      'No generic quality/construction filler',
+      'Use silhouettes, variants, era cues, rack zones, and pass conditions',
+      'At most 2 mainstream brand examples total, only when category-fit',
+      'If title already includes a brand, do not force extra brand lines',
       'Use concise, direct language',
     ],
   });
@@ -590,7 +703,7 @@ async function generateStyleProfileForTitle(title, context = {}) {
       retries: 2,
       model,
     });
-    const normalized = dedupeAcrossStyleSections(payload || {});
+    const normalized = dedupeAcrossStyleSections(payload || {}, cleanTitle);
     if (!isStyleProfileValid(normalized)) {
       return { status: 'invalid', error: 'style_profile_invalid_schema', profile: null };
     }

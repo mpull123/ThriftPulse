@@ -9,6 +9,7 @@ import {
   getRunAgeLabel,
 } from "@/lib/marketIntel";
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
+import { parseStyleProfileFromNode } from "@/lib/styleGuidance";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
 type ActionBand = "Green" | "Yellow" | "Red";
 const SCOUT_PRESET_STORAGE_KEY = "thriftpulse_research_preset_v1";
@@ -725,82 +726,6 @@ function getUniqueFindFirstItems(styles: string[], examples: string[]): string[]
   return Array.from(new Set(out)).slice(0, 3);
 }
 
-function normalizeProfileList(value: any, maxItems: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of value) {
-    const line = String(raw || "").replace(/\s+/g, " ").trim();
-    if (!line || line.length < 6 || line.length > 120) continue;
-    const key = line.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(line);
-    if (out.length >= maxItems) break;
-  }
-  return out;
-}
-
-function isNearDuplicate(a: string, b: string): boolean {
-  const normalize = (v: string) =>
-    String(v || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  const at = new Set(normalize(a).split(" ").filter((w) => w.length > 2));
-  const bt = new Set(normalize(b).split(" ").filter((w) => w.length > 2));
-  if (!at.size || !bt.size) return false;
-  let intersect = 0;
-  for (const token of at) if (bt.has(token)) intersect += 1;
-  return intersect / Math.max(at.size, bt.size) >= 0.65;
-}
-
-function getStyleProfileFromNode(node: any): {
-  ok: boolean;
-  status: string;
-  reason: string;
-  styles_to_find: string[];
-  find_these_first: string[];
-  where_to_check_first: string[];
-  pass_if: string[];
-  confidence_note: string;
-} {
-  const status = String(node?.style_profile_status || "missing");
-  const raw = node?.style_profile_json;
-  const payload = raw && typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
-  if (!payload || typeof payload !== "object") {
-    return {
-      ok: false,
-      status,
-      reason: String(node?.style_profile_error || "No generated style profile on this node."),
-      styles_to_find: [],
-      find_these_first: [],
-      where_to_check_first: [],
-      pass_if: [],
-      confidence_note: "",
-    };
-  }
-
-  const styles = normalizeProfileList(payload?.styles_to_find, 3);
-  const findFirst = normalizeProfileList(payload?.find_these_first, 3).filter(
-    (line) => !styles.some((s) => isNearDuplicate(s, line))
-  );
-  const where = normalizeProfileList(payload?.where_to_check_first, 2);
-  const passIf = normalizeProfileList(payload?.pass_if, 2);
-
-  const ok = styles.length > 0 && where.length > 0 && passIf.length > 0 && status === "ok";
-  return {
-    ok,
-    status,
-    reason: ok ? "" : String(node?.style_profile_error || "Generated profile is missing required sections."),
-    styles_to_find: styles,
-    find_these_first: findFirst,
-    where_to_check_first: where,
-    pass_if: passIf,
-    confidence_note: String(payload?.confidence_note || "").replace(/\s+/g, " ").trim(),
-  };
-}
 
 function buildWhyNow(node: any): string {
   const depth = getCompDepthLabel(Number(node?.source_counts?.ebay || 0));
@@ -2241,14 +2166,8 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
-                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
-                       Action {toDollar(Number(node?.action_score || 0))}
-                     </span>
                      <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
-                       {node?.action_band || "Red"}
-                     </span>
-                     <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
-                       {node?.action_recommendation || "Watch"}
+                       {`${node?.action_recommendation || "Watch"} • ${node?.action_band || "Red"}`}
                      </span>
                   </div>
                   <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
@@ -2414,10 +2333,10 @@ export default function SectionScout({
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
           {visibleTrendNodes.map((node: any) => {
-            const snapshotLines = buildNodeSnapshot(node, "style");
-            const conditionCaps = getConditionBuyCaps(Number(node?.target_buy || 0));
-            const styleProfile = getStyleProfileFromNode(node);
-            const whyNow = buildWhyNow(node);
+            const styleProfile = parseStyleProfileFromNode(node);
+            const compactEvidence = `Comps ${node.compAgeLabel || "Unknown"} • ${getCompDepthLabel(
+              Number(node?.source_counts?.ebay || 0)
+            )} depth • Mix ${getSourceMixLabel(node?.source_counts)} • Net +${formatUsd(Number(node?.expected_profit || 0))}`;
             return (
             <div 
               key={node.id} 
@@ -2454,55 +2373,30 @@ export default function SectionScout({
               
               {viewMode === "detailed" && (
               <div className="bg-slate-50 dark:bg-white/5 p-4 rounded-3xl mb-5 border border-slate-100 dark:border-slate-800">
-                 <div className="flex flex-wrap gap-2 mb-3">
-                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
-                     Comps: {node.compAgeLabel || "Unknown"}
-                   </span>
-                   <span className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
-                     {`Evidence ${node.evidence_quality || "Narrow"}`}
-                   </span>
-                 </div>
-                 <div className="flex flex-wrap gap-1 mb-3">
-                   {(node?.action_reasons || []).slice(0, 3).map((reason: string, idx: number) => (
-                     <span
-                       key={`${reason}-${idx}`}
-                       className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
-                     >
-                       {reason}
-                     </span>
-                   ))}
-                 </div>
-                 <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-3">
-                   {whyNow}
+                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                   Evidence Snapshot
                  </p>
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-2 italic">
-                   <CheckSquare size={14} className="mr-2 text-blue-500" /> In-Store Find Plan
+                 <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 mb-3">
+                   {compactEvidence}
                  </p>
-                 <ul className="list-disc pl-5 space-y-1.5">
-                   {snapshotLines.map((item: string, i: number) => (
-                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
-                       {item}
-                     </li>
-                   ))}
-                 </ul>
-                 <div className="mt-3 space-y-3">
-                   {styleProfile.ok ? (
+                 <div className="space-y-3">
+                   {styleProfile.ok && styleProfile.profile ? (
                      <>
                        <div>
                          <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Styles to Find</p>
                          <ul className="list-disc pl-5 space-y-1">
-                           {styleProfile.styles_to_find.map((item: string, i: number) => (
+                           {styleProfile.profile.styles_to_find.map((item: string, i: number) => (
                              <li key={`style-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
                                {item}
                              </li>
                            ))}
                          </ul>
                        </div>
-                       {styleProfile.find_these_first.length > 0 && (
+                       {styleProfile.profile.find_these_first.length > 0 && (
                          <div>
                            <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Find These First</p>
                            <ul className="list-disc pl-5 space-y-1">
-                             {styleProfile.find_these_first.map((item: string, i: number) => (
+                             {styleProfile.profile.find_these_first.map((item: string, i: number) => (
                                <li key={`find-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
                                  {item}
                                </li>
@@ -2513,7 +2407,7 @@ export default function SectionScout({
                        <div>
                          <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Where to Check First</p>
                          <ul className="list-disc pl-5 space-y-1">
-                           {styleProfile.where_to_check_first.map((item: string, i: number) => (
+                           {styleProfile.profile.where_to_check_first.map((item: string, i: number) => (
                              <li key={`zone-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
                                {item}
                              </li>
@@ -2523,46 +2417,35 @@ export default function SectionScout({
                        <div>
                          <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Pass If</p>
                          <ul className="list-disc pl-5 space-y-1">
-                           {styleProfile.pass_if.map((item: string, i: number) => (
+                           {styleProfile.profile.pass_if.map((item: string, i: number) => (
                              <li key={`pass-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
                                {item}
                              </li>
                            ))}
                          </ul>
                        </div>
-                       {styleProfile.confidence_note && (
+                       {styleProfile.profile.confidence_note && (
                          <p className="text-[9px] font-black uppercase tracking-wider text-slate-500">
-                           {`Profile note: ${styleProfile.confidence_note}`}
+                           {`Profile note: ${styleProfile.profile.confidence_note}`}
                          </p>
                        )}
                      </>
-                   ) : (
+                   ) : styleProfile.state === "failed" ? (
                      <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
                        <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">Style guidance unavailable</p>
                        <p className="mt-1 text-[10px] font-bold text-amber-700 dark:text-amber-300">
-                         {`Status: ${styleProfile.status}. ${styleProfile.reason || "Run a sync to regenerate this profile."}`}
+                         {`Status: ${styleProfile.status}. ${styleProfile.reason || "On-demand generation failed. Open details and retry."}`}
+                       </p>
+                     </div>
+                   ) : (
+                     <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-3">
+                       <p className="text-[10px] font-black uppercase tracking-wider text-blue-600">Style guidance pending</p>
+                       <p className="mt-1 text-[10px] font-bold text-blue-700 dark:text-blue-300">
+                         Open details to auto-generate style guidance for this node.
                        </p>
                      </div>
                    )}
-                   <div>
-                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Buy Caps by Condition</p>
-                     <ul className="list-disc pl-5 space-y-1">
-                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Excellent: ${formatUsd(conditionCaps.excellent)}`}</li>
-                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Good: ${formatUsd(conditionCaps.good)}`}</li>
-                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Flawed: ${formatUsd(conditionCaps.flawed)}`}</li>
-                     </ul>
-                   </div>
                  </div>
-                 {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
-                   <p className="mt-3 text-[9px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-300">
-                     {`Watch brands: ${node.brands_to_watch.slice(0, 2).join(" • ")}`}
-                   </p>
-                 )}
-                 {node.buy_cap_warning && (
-                   <p className="mt-2 text-[9px] font-black uppercase tracking-wider text-amber-500">
-                     {node.buy_cap_warning}
-                   </p>
-                 )}
               </div>
               )}
 

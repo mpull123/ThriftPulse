@@ -46,10 +46,28 @@ export interface StyleProfile {
   confidence_note?: string;
 }
 
+export type StyleProfileStatus = "ok" | "invalid" | "missing" | "error";
+
+export interface StyleProfileGenerateRequest {
+  signal_id: string;
+  title: string;
+  track?: string | null;
+  hook_brand?: string | null;
+}
+
+export interface StyleProfileGenerateResponse {
+  ok: boolean;
+  generated: boolean;
+  style_profile_status: StyleProfileStatus | "missing";
+  style_profile_error: string | null;
+  style_profile_json: StyleProfile | null;
+  style_profile_updated_at: string | null;
+}
+
 export interface MarketSignal extends TrendSignal {
   track?: string | null;
   style_profile_json?: StyleProfile | null;
-  style_profile_status?: "ok" | "invalid" | "missing" | "error" | null;
+  style_profile_status?: StyleProfileStatus | null;
   style_profile_updated_at?: string | null;
   style_profile_error?: string | null;
 }
