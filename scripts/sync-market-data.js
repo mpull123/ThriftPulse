@@ -308,6 +308,18 @@ function stripFeedTitleSource(text) {
   return compactWhitespace(String(text || '').replace(/\s+[-|]\s+[^-|]{2,40}$/, ''));
 }
 
+function parseRssOrAtomTitles(xmlText) {
+  const xml = String(xmlText || '');
+  if (!xml) return [];
+  const itemTitles = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)]
+    .map((m) => stripFeedTitleSource(decodeXmlEntities(m[1])))
+    .filter(Boolean);
+  if (itemTitles.length > 0) return itemTitles;
+  return [...xml.matchAll(/<entry>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/entry>/gi)]
+    .map((m) => stripFeedTitleSource(decodeXmlEntities(m[1])))
+    .filter(Boolean);
+}
+
 function toGoogleNewsRssUrl(query) {
   const q = compactWhitespace(query);
   if (!q) return '';
@@ -1101,7 +1113,8 @@ function titleToDiscoveryCandidate(title) {
 }
 
 async function fetchEbayDiscoveryTerms(seedTerms) {
-  const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, 28);
+  const seedLimit = Math.max(10, Number(process.env.EBAY_DISCOVERY_SEED_LIMIT || 48));
+  const seeds = [...new Set((seedTerms || []).map((s) => compactWhitespace(String(s))).filter(Boolean))].slice(0, seedLimit);
   const discoveredStrict = [];
   const discoveredRelaxed = [];
 
@@ -1118,11 +1131,33 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
       if (!res.ok) continue;
 
       const $ = cheerio.load(html);
-      const titles = $('.s-item__title')
+      let titles = $('.s-item__title')
         .map((_, el) => compactWhitespace($(el).text()))
         .get()
         .filter(Boolean)
         .slice(0, 80);
+
+      if (titles.length < 10) {
+        const rssUrl =
+          `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(seed)}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1&_rss=1`;
+        try {
+          const rssRes = await fetch(rssUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+          });
+          const rssXml = await rssRes.text();
+          if (rssRes.ok) {
+            const rssTitles = parseRssOrAtomTitles(rssXml).slice(0, 80);
+            if (rssTitles.length > 0) {
+              titles = [...new Set([...titles, ...rssTitles])].slice(0, 90);
+            }
+          }
+        } catch (_rssErr) {
+          // Keep HTML titles when RSS fallback fails.
+        }
+      }
 
       for (const title of titles) {
         const candidate = titleToDiscoveryCandidate(title);
@@ -1148,6 +1183,21 @@ async function fetchEbayDiscoveryTerms(seedTerms) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     deduped.push(term);
+  }
+  if (deduped.length === 0) {
+    const seedFallback = [];
+    for (const seed of seeds) {
+      const normalizedSeed = normalizeTrendTerm(seed);
+      const verdict = classifyTrendTermDiscovery(normalizedSeed);
+      if (!verdict.ok) continue;
+      if (!verdict.brand && !hasStyleProductNoun(normalizedSeed)) continue;
+      const key = getDedupeKey(normalizedSeed);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      seedFallback.push(normalizedSeed);
+      if (seedFallback.length >= 40) break;
+    }
+    deduped.push(...seedFallback);
   }
   const kept = applyDiversityCaps(
     deduped,
@@ -1357,55 +1407,92 @@ async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTe
 }
 
 async function fetchGoogleTrendsTerms() {
-  const urls = [
-    'https://trends.google.com/trending/rss?geo=US',
-    'https://trends.google.com/trends/trendingsearches/daily/rss?geo=US',
-    'https://trends.google.com/trends/hottrends/atom/feed?pn=p1'
-  ];
+  const geos = String(process.env.GOOGLE_TRENDS_GEOS || 'US,GB,CA,AU')
+    .split(',')
+    .map((v) => v.trim().toUpperCase())
+    .filter(Boolean)
+    .slice(0, 10);
+  const urls = geos.flatMap((geo) => [
+    `https://trends.google.com/trending/rss?geo=${encodeURIComponent(geo)}`,
+    `https://trends.google.com/trends/trendingsearches/daily/rss?geo=${encodeURIComponent(geo)}`,
+  ]);
 
-  let xml = '';
-  let lastError = 'google_trends_failed_unknown';
+  const aggregatedTitles = [];
+  const failures = [];
   for (const url of urls) {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'thriftpulse-sync/1.0',
-        Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'thriftpulse-sync/1.0',
+          Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
+        }
+      });
+      const xml = await res.text();
+      if (!res.ok) {
+        const snippet = xml.slice(0, 120).replace(/\s+/g, ' ');
+        failures.push(`status=${res.status} url=${url} body="${snippet}"`);
+        continue;
       }
-    });
-
-    xml = await res.text();
-    if (res.ok && /<item>/i.test(xml)) {
-      lastError = '';
-      break;
+      const titles = parseRssOrAtomTitles(xml).slice(0, 80);
+      if (!titles.length) {
+        failures.push(`status=ok_but_empty url=${url}`);
+        continue;
+      }
+      aggregatedTitles.push(...titles);
+    } catch (err) {
+      failures.push(`fetch_error url=${url} err=${String(err?.message || 'unknown')}`);
     }
-
-    const snippet = xml.slice(0, 120).replace(/\s+/g, ' ');
-    lastError = `google_trends_failed status=${res.status} url=${url} body="${snippet}"`;
   }
 
-  if (lastError) throw new Error(lastError);
-
-  const titleMatches = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<\/item>/gi)];
-  const rawTitles = titleMatches.map((m) => m[1]).filter(Boolean);
+  const rawTitles = [...new Set(aggregatedTitles.map((t) => compactWhitespace(t)).filter(Boolean))];
+  if (!rawTitles.length) {
+    throw new Error(`google_trends_failed ${failures[0] || 'no_titles_returned'}`);
+  }
 
   const rawTerms = [];
   const filteredTerms = [];
+  const titleBrandTerms = [];
   for (const title of rawTitles) {
-    for (const term of extractTermsFromTrendTitle(title)) {
+    const extracted = [
+      ...extractTermsFromTrendTitle(title),
+      ...extractFashionEntityTermsFromTitle(title),
+    ];
+    const brand = inferBrandFromTerm(title);
+    if (brand) titleBrandTerms.push(normalizeTrendTerm(brand));
+    for (const term of extracted) {
       rawTerms.push(term);
       if (isFashionTerm(term)) filteredTerms.push(term);
     }
   }
 
-  const uniqueRaw = [...new Set(rawTerms.map((t) => t.trim()))].filter(Boolean);
-  const keywordFiltered = [...new Set(filteredTerms.map((t) => t.trim()))];
-  const strictFiltered = keywordFiltered.filter(shouldUseTrendTerm);
-  const relaxedFiltered = keywordFiltered.filter((term) => classifyTrendTermDiscovery(term).ok);
-  const uniqueFiltered = strictFiltered.length > 0
-    ? strictFiltered
-    : applyDiversityCaps(relaxedFiltered, Number(process.env.GOOGLE_TRENDS_BUCKET_CAP || 8)).slice(0, Number(process.env.MAX_GOOGLE_TRENDS_TERMS || 120));
+  const uniqueRaw = [...new Set(rawTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const keywordFiltered = [...new Set(filteredTerms.map((t) => compactWhitespace(t)).filter(Boolean))];
+  const strictFiltered = [...new Set(keywordFiltered.filter(shouldUseTrendTerm).map(normalizeTrendTerm))];
+  const relaxedFiltered = [...new Set(
+    keywordFiltered
+      .filter((term) => {
+        const verdict = classifyTrendTermDiscovery(term);
+        return verdict.ok && (!!verdict.brand || hasStyleProductNoun(term));
+      })
+      .map(normalizeTrendTerm)
+  )];
+  const brandFallback = [...new Set(
+    titleBrandTerms.filter((term) => {
+      const verdict = classifyTrendTermDiscovery(term);
+      return verdict.ok;
+    })
+  )];
+
+  let uniqueFiltered = strictFiltered.length > 0 ? strictFiltered : relaxedFiltered;
+  if (!uniqueFiltered.length && brandFallback.length) {
+    uniqueFiltered = brandFallback;
+  }
+  uniqueFiltered = applyDiversityCaps(
+    uniqueFiltered,
+    Number(process.env.GOOGLE_TRENDS_BUCKET_CAP || 8)
+  ).slice(0, Number(process.env.MAX_GOOGLE_TRENDS_TERMS || 120));
   console.log(
-    `📊 Google Trends filter stats: raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strict=${strictFiltered.length} relaxed=${relaxedFiltered.length} kept=${uniqueFiltered.length}`
+    `📊 Google Trends filter stats: geos=${geos.length} titles=${rawTitles.length} raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strict=${strictFiltered.length} relaxed=${relaxedFiltered.length} brandFallback=${brandFallback.length} kept=${uniqueFiltered.length}`
   );
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
