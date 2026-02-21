@@ -17,9 +17,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install Scraping and AI Tools
-        run: npm install @supabase/supabase-js cheerio node-fetch openai
+      - name: Install Dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Run Market Sync and AI Assistant
         env:
