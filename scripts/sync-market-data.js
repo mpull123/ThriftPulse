@@ -398,11 +398,11 @@ function parseOpenAIJsonResponse(bodyText) {
   return JSON.parse(jsonBlock);
 }
 
-async function callOpenAIJsonCompletion({ systemPrompt, userPrompt, temperature = 0, retries = 2 }) {
+async function callOpenAIJsonCompletion({ systemPrompt, userPrompt, temperature = 0, retries = 2, model: explicitModel = null }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('openai_key_missing');
 
-  const model = process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
+  const model = explicitModel || process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
   let lastError = null;
 
   for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
@@ -438,6 +438,167 @@ async function callOpenAIJsonCompletion({ systemPrompt, userPrompt, temperature 
   }
 
   throw lastError || new Error('openai_json_call_failed');
+}
+
+const STYLE_PROFILE_VERSION = 'v1';
+let styleProfileGeneratedThisRun = 0;
+
+function inferStyleItemTypeForAI(title) {
+  const t = String(title || '').toLowerCase();
+  if (/\b(jacket|coat|anorak|parka|shell|windbreaker|blazer|trench|fleece)\b/.test(t)) return 'outerwear';
+  if (/\b(boot|boots|sneaker|sneakers|shoe|shoes|loafer|clog|sandal)\b/.test(t)) return 'footwear';
+  if (/\b(dress|maxi|midi|slip dress|gown)\b/.test(t)) return 'dress';
+  if (/\b(hoodie|sweatshirt|sweater|cardigan|knit|crewneck)\b/.test(t)) return 'knitwear';
+  if (/\b(bag|tote|crossbody|backpack|handbag|purse)\b/.test(t)) return 'bags';
+  if (/\b(pants|trouser|trousers|jean|jeans|cargo|shorts|skirt|culotte|chino|double knee|carpenter)\b/.test(t)) return 'bottoms';
+  if (/\b(shirt|tee|t-shirt|top|blouse|tank)\b/.test(t)) return 'top';
+  return 'mixed';
+}
+
+function normalizeProfileLine(line) {
+  return compactWhitespace(String(line || '').replace(/^[-*•]\s*/, '').trim());
+}
+
+function tokenizeForOverlap(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !['with', 'from', 'that', 'this', 'your', 'look', 'find'].includes(w));
+}
+
+function isNearDuplicate(a, b) {
+  const at = new Set(tokenizeForOverlap(a));
+  const bt = new Set(tokenizeForOverlap(b));
+  if (!at.size || !bt.size) return false;
+  let intersect = 0;
+  for (const t of at) if (bt.has(t)) intersect += 1;
+  const ratio = intersect / Math.max(at.size, bt.size);
+  return ratio >= 0.65;
+}
+
+function looksGenericStyleLine(line) {
+  const n = String(line || '').toLowerCase();
+  return (
+    n.includes('quality piece') ||
+    n.includes('check condition') ||
+    n.includes('strong comps') ||
+    n.includes('good fabric') ||
+    n.includes('recognizable silhouette')
+  );
+}
+
+function sanitizeList(list, maxItems, { allowGeneric = false } = {}) {
+  const out = [];
+  const seen = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const line = normalizeProfileLine(raw);
+    if (!line) continue;
+    if (line.length < 6 || line.length > 120) continue;
+    if (!allowGeneric && looksGenericStyleLine(line)) continue;
+    if (seen.some((s) => isNearDuplicate(s, line))) continue;
+    seen.push(line);
+    out.push(line);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function dedupeAcrossStyleSections(profile) {
+  const styles = sanitizeList(profile?.styles_to_find, 3);
+  const findFirstRaw = sanitizeList(profile?.find_these_first, 3);
+  const where = sanitizeList(profile?.where_to_check_first, 2, { allowGeneric: true });
+  const passIf = sanitizeList(profile?.pass_if, 2, { allowGeneric: true });
+
+  const findFirst = [];
+  for (const line of findFirstRaw) {
+    const overlapsStyles = styles.some((s) => isNearDuplicate(s, line));
+    if (!overlapsStyles) findFirst.push(line);
+    if (findFirst.length >= 3) break;
+  }
+
+  return {
+    item_type: ['outerwear', 'bottoms', 'footwear', 'knitwear', 'bags', 'dress', 'top', 'mixed'].includes(profile?.item_type)
+      ? profile.item_type
+      : 'mixed',
+    styles_to_find: styles,
+    find_these_first: findFirst,
+    where_to_check_first: where,
+    pass_if: passIf,
+    confidence_note: compactWhitespace(String(profile?.confidence_note || '')),
+  };
+}
+
+function isStyleProfileValid(profile) {
+  if (!profile || typeof profile !== 'object') return false;
+  if (!Array.isArray(profile.styles_to_find) || profile.styles_to_find.length === 0) return false;
+  if (!Array.isArray(profile.where_to_check_first) || profile.where_to_check_first.length === 0) return false;
+  if (!Array.isArray(profile.pass_if) || profile.pass_if.length === 0) return false;
+  return true;
+}
+
+function shouldRefreshStyleProfile(signal) {
+  const ttlDays = Math.max(1, Number(process.env.STYLE_PROFILE_TTL_DAYS || 14));
+  const status = String(signal?.style_profile_status || '').toLowerCase();
+  const json = signal?.style_profile_json;
+  if (!json) return true;
+  if (status && status !== 'ok') return true;
+  const updatedAt = signal?.style_profile_updated_at;
+  if (!updatedAt) return true;
+  const ageMs = Date.now() - new Date(updatedAt).getTime();
+  return Number.isFinite(ageMs) ? ageMs > ttlDays * 24 * 60 * 60 * 1000 : true;
+}
+
+async function generateStyleProfileForTitle(title, context = {}) {
+  const cleanTitle = compactWhitespace(String(title || ''));
+  if (!cleanTitle) {
+    return { status: 'missing', error: 'missing_title', profile: null };
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    return { status: 'missing', error: 'openai_key_missing', profile: null };
+  }
+
+  const model = process.env.STYLE_PROFILE_MODEL || process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
+  const systemPrompt =
+    'You are a resale sourcing strategist for used fashion. Return JSON only. Be concrete, in-store actionable, and avoid repeating the title. Keep each bullet specific.';
+  const userPrompt = JSON.stringify({
+    task: 'Generate structured style sourcing profile for a node card',
+    title: cleanTitle,
+    inferred_item_type: inferStyleItemTypeForAI(cleanTitle),
+    context,
+    schema: {
+      item_type: 'outerwear|bottoms|footwear|knitwear|bags|dress|top|mixed',
+      styles_to_find: 'array (max 3, each 6-120 chars)',
+      find_these_first: 'array (max 3, each 6-120 chars, should not duplicate styles_to_find)',
+      where_to_check_first: 'array (max 2, each 6-120 chars)',
+      pass_if: 'array (max 2, each 6-120 chars)',
+      confidence_note: 'string optional, <= 140 chars',
+    },
+    constraints: [
+      'No exact or near-duplicate items across sections',
+      'No generic filler unless title is ambiguous',
+      'Use concise, direct language',
+    ],
+  });
+
+  try {
+    const payload = await callOpenAIJsonCompletion({
+      systemPrompt,
+      userPrompt,
+      temperature: 0.15,
+      retries: 2,
+      model,
+    });
+    const normalized = dedupeAcrossStyleSections(payload || {});
+    if (!isStyleProfileValid(normalized)) {
+      return { status: 'invalid', error: 'style_profile_invalid_schema', profile: null };
+    }
+    styleProfileGeneratedThisRun += 1;
+    return { status: 'ok', error: null, profile: normalized };
+  } catch (err) {
+    return { status: 'error', error: `style_profile_ai_error ${err.message}`, profile: null };
+  }
 }
 
 function extractTermsFromTrendTitle(title) {
@@ -1198,6 +1359,183 @@ function calculateSignalScore({
   return Math.max(10, Math.min(99, score));
 }
 
+function clampInt(value, min, max) {
+  const v = Math.round(Number(value || 0));
+  return Math.max(min, Math.min(max, v));
+}
+
+function gradeFromScore(score) {
+  if (score >= 85) return 'A';
+  if (score >= 72) return 'B';
+  if (score >= 58) return 'C';
+  return 'D';
+}
+
+function buildBaseRating({
+  term,
+  heatScore,
+  ebaySampleCount,
+  sourceSignalCount,
+  priceLow,
+  priceHigh,
+  avgPrice,
+  googleTrendHit,
+  corpusHit,
+  discoveryHit,
+}) {
+  const heat = safeNumber(heatScore, 50);
+  const sample = safeNumber(ebaySampleCount, 0);
+  const sources = safeNumber(sourceSignalCount, 0);
+  const low = safeNumber(priceLow, 0);
+  const high = safeNumber(priceHigh, 0);
+  const avg = safeNumber(avgPrice, 0);
+  const spreadPct = low > 0 && high > 0 ? ((high - low) / low) * 100 : 0;
+  const sourceDiversityBoost =
+    (googleTrendHit ? 1 : 0) +
+    (corpusHit ? 1 : 0) +
+    (discoveryHit ? 1 : 0);
+
+  let confidenceScore =
+    26 +
+    Math.round(heat * 0.32) +
+    Math.min(28, sample) +
+    Math.min(18, sources * 6) +
+    sourceDiversityBoost * 3;
+
+  // Penalize very volatile comp ranges.
+  if (spreadPct > 220) confidenceScore -= 12;
+  else if (spreadPct > 150) confidenceScore -= 8;
+  else if (spreadPct > 95) confidenceScore -= 4;
+
+  let sourcingScore =
+    22 +
+    Math.round(heat * 0.28) +
+    Math.min(24, sample) +
+    Math.min(14, sources * 4);
+
+  // Better resale midpoint increases sourcing attractiveness.
+  if (avg >= 180) sourcingScore += 8;
+  else if (avg >= 90) sourcingScore += 4;
+  else if (avg <= 28) sourcingScore -= 4;
+
+  // Hard evidence caps for reliability.
+  if (sample === 0) confidenceScore = Math.min(confidenceScore, 55);
+  else if (sample < 6) confidenceScore = Math.min(confidenceScore, 68);
+  if (sources < 2) confidenceScore = Math.min(confidenceScore, 72);
+
+  confidenceScore = clampInt(confidenceScore, 10, 99);
+  sourcingScore = clampInt(sourcingScore, 10, 99);
+  const grade = gradeFromScore(Math.round((confidenceScore + sourcingScore) / 2));
+
+  const explanation = [
+    `${term}: base model scored from heat, sold-comp depth, and source diversity.`,
+    `Evidence depth: eBay ${sample} comps, ${sources} source signal(s).`,
+    low > 0 && high > 0
+      ? `Comp range: $${Math.round(low)}-$${Math.round(high)} (${Math.round(spreadPct)}% spread).`
+      : 'Comp range: pending stronger sold-comp spread.',
+  ];
+
+  const riskFlags = [];
+  if (sample < 6) riskFlags.push('low_comp_depth');
+  if (sources < 2) riskFlags.push('single_source_bias');
+  if (spreadPct > 150) riskFlags.push('high_price_volatility');
+
+  return {
+    confidenceScore,
+    sourcingScore,
+    grade,
+    explanation,
+    riskFlags,
+    spreadPct: Math.round(spreadPct),
+  };
+}
+
+async function scoreWithAIAdjustments({
+  term,
+  track,
+  baseRating,
+  sampleCount,
+  sourceSignalCount,
+  heatScore,
+  priceLow,
+  priceHigh,
+  avgPrice,
+}) {
+  const aiEnabled = String(process.env.ENABLE_AI_RATING || '1') !== '0';
+  if (!aiEnabled || !process.env.OPENAI_API_KEY) {
+    return {
+      ...baseRating,
+      model: 'base_only',
+    };
+  }
+
+  const ratingModel = process.env.TREND_RATING_MODEL || process.env.TREND_CLASSIFIER_MODEL || 'gpt-4o-mini';
+  const systemPrompt =
+    'You are a resale scoring assistant. Return strict JSON only with: confidence_adjust (-10..10 int), sourcing_adjust (-10..10 int), explanation (string), risk_flags (string[]). Keep adjustments conservative and evidence-driven.';
+  const userPrompt = JSON.stringify({
+    term,
+    track,
+    evidence: {
+      sample_count: sampleCount,
+      source_signal_count: sourceSignalCount,
+      heat_score: heatScore,
+      price_low: priceLow,
+      price_high: priceHigh,
+      avg_price: avgPrice,
+    },
+    base: {
+      confidence_score: baseRating.confidenceScore,
+      sourcing_score: baseRating.sourcingScore,
+      grade: baseRating.grade,
+      spread_pct: baseRating.spreadPct,
+    },
+    instruction: 'Recommend small score adjustments only when clearly justified by evidence quality or risk.',
+  });
+
+  try {
+    const payload = await callOpenAIJsonCompletion({
+      systemPrompt,
+      userPrompt,
+      temperature: 0,
+      retries: 1,
+      model: ratingModel,
+    });
+    const cAdj = clampInt(payload?.confidence_adjust, -10, 10);
+    const sAdj = clampInt(payload?.sourcing_adjust, -10, 10);
+    let confidenceScore = clampInt(baseRating.confidenceScore + cAdj, 10, 99);
+    let sourcingScore = clampInt(baseRating.sourcingScore + sAdj, 10, 99);
+
+    // Preserve deterministic caps for low evidence.
+    if (sampleCount === 0) confidenceScore = Math.min(confidenceScore, 55);
+    else if (sampleCount < 6) confidenceScore = Math.min(confidenceScore, 68);
+    if (sourceSignalCount < 2) confidenceScore = Math.min(confidenceScore, 72);
+
+    const grade = gradeFromScore(Math.round((confidenceScore + sourcingScore) / 2));
+    const aiExplanation = String(payload?.explanation || '').trim();
+    const aiRiskFlags = Array.isArray(payload?.risk_flags)
+      ? payload.risk_flags.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 5)
+      : [];
+
+    return {
+      confidenceScore,
+      sourcingScore,
+      grade,
+      explanation: aiExplanation
+        ? [...baseRating.explanation, `AI: ${aiExplanation}`]
+        : baseRating.explanation,
+      riskFlags: [...new Set([...baseRating.riskFlags, ...aiRiskFlags])],
+      spreadPct: baseRating.spreadPct,
+      model: ratingModel,
+    };
+  } catch (err) {
+    console.warn(`AI rating adjustment failed (${term}):`, err.message);
+    return {
+      ...baseRating,
+      model: 'base_only_fallback',
+    };
+  }
+}
+
 async function getActiveQueryPacks() {
   const { data, error } = await supabase
     .from('subreddits')
@@ -1291,6 +1629,57 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
         googleTrendBoost: true,
         redditMentions: 0
       });
+      const sourceSignalCount = (sampleCount > 0 ? 1 : 0) + nonEbaySignalCount;
+      const compLow = Math.max(1, Math.floor(avgPrice * 0.85));
+      const compHigh = Math.max(1, Math.floor(avgPrice * 1.15));
+      const mentionCount = calculateMentionCount({
+        ebaySampleCount: sampleCount,
+        fashionRssHit,
+        googleNewsHit,
+        googleTrendHit,
+        corpusHit,
+        discoveryHit,
+      });
+      const baseRating = buildBaseRating({
+        term,
+        heatScore,
+        ebaySampleCount: sampleCount,
+        sourceSignalCount,
+        priceLow: compLow,
+        priceHigh: compHigh,
+        avgPrice,
+        googleTrendHit,
+        corpusHit,
+        discoveryHit,
+      });
+      const scored = await scoreWithAIAdjustments({
+        term,
+        track: termVerdict.type === 'brand'
+          ? 'Brand'
+          : termVerdict.type === 'brand_style'
+            ? 'Brand + Style'
+            : 'Style Category',
+        baseRating,
+        sampleCount,
+        sourceSignalCount,
+        heatScore,
+        priceLow: compLow,
+        priceHigh: compHigh,
+        avgPrice,
+      });
+      const isStyleLike = termVerdict.type !== 'brand';
+      const maxStyleProfilesPerRun = Math.max(0, Number(process.env.STYLE_PROFILE_MAX_PER_RUN || 120));
+      let styleProfileResult = { status: 'missing', error: 'not_style_track', profile: null };
+      if (isStyleLike && styleProfileGeneratedThisRun < maxStyleProfilesPerRun) {
+        styleProfileResult = await generateStyleProfileForTitle(term, {
+          track: termVerdict.type === 'brand_style' ? 'Brand + Style' : 'Style Category',
+          hook_brand: termVerdict.brand || null,
+          market_sentiment: scored.explanation.slice(0, 2).join(' '),
+          risk_factor: scored.riskFlags.slice(0, 2).join(', ') || null,
+        });
+      } else if (isStyleLike && styleProfileGeneratedThisRun >= maxStyleProfilesPerRun) {
+        styleProfileResult = { status: 'missing', error: 'style_profile_run_cap_reached', profile: null };
+      }
 
       const { error } = await supabase
         .from('market_signals')
@@ -1303,27 +1692,23 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
                 ? 'Brand + Style'
                 : 'Style Category',
             hook_brand: termVerdict.brand,
-            market_sentiment: 'AI + eBay validated trend candidate.',
+            market_sentiment: scored.explanation.slice(0, 3).join(' '),
+            risk_factor: scored.riskFlags.join(', ') || null,
             ebay_sample_count: sampleCount,
             google_trend_hits: googleTrendHit ? 1 : 0,
             ai_corpus_hits: corpusHit ? 1 : 0,
             ebay_discovery_hits: discoveryHit ? 1 : 0,
-            source_signal_count: (sampleCount > 0 ? 1 : 0) + nonEbaySignalCount,
-            mention_count: calculateMentionCount({
-              ebaySampleCount: sampleCount,
-              fashionRssHit,
-              googleNewsHit,
-              googleTrendHit,
-              corpusHit,
-              discoveryHit,
-            }),
-            confidence_score: calculateSignalScore({
-              heatScore,
-              ebaySampleCount: sampleCount,
-              sourceSignalCount: (sampleCount > 0 ? 1 : 0) + nonEbaySignalCount,
-            }),
+            source_signal_count: sourceSignalCount,
+            mention_count: mentionCount,
+            confidence_score: scored.confidenceScore,
+            liquidity_score: scored.sourcingScore,
             heat_score: heatScore,
             exit_price: Math.max(10, avgPrice),
+            style_profile_json: styleProfileResult.profile,
+            style_profile_version: STYLE_PROFILE_VERSION,
+            style_profile_updated_at: styleProfileResult.profile ? new Date().toISOString() : null,
+            style_profile_status: styleProfileResult.status,
+            style_profile_error: styleProfileResult.error,
             updated_at: new Date().toISOString()
           }],
           { onConflict: 'trend_name' }
@@ -1334,12 +1719,12 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
           signalId: null,
           trendName: term,
           sampleSize: sampleCount,
-          priceLow: Math.max(1, Math.floor(avgPrice * 0.85)),
-          priceHigh: Math.max(1, Math.floor(avgPrice * 1.15)),
+          priceLow: compLow,
+          priceHigh: compHigh,
           notes: 'Discovery-mode sold comps snapshot.',
         });
         created += 1;
-        console.log(`🆕 Discovered trend: ${term} | Heat: ${heatScore} | $${avgPrice} | Sample: ${sampleCount} | Source hints: ${nonEbaySignalCount}`);
+        console.log(`🆕 Discovered trend: ${term} | Heat: ${heatScore} | $${avgPrice} | Sample: ${sampleCount} | C:${scored.confidenceScore} S:${scored.sourcingScore} (${scored.grade}, ${scored.model})`);
       } else {
         console.error(`Discovery upsert failed (${term}):`, error.message);
       }
@@ -1598,11 +1983,65 @@ async function syncMarketPulse() {
         corpusHit,
         discoveryHit,
       });
-      const confidenceScore = calculateSignalScore({
+      const baseConfidenceScore = calculateSignalScore({
         heatScore: newHeat,
         ebaySampleCount: sampleCount,
         sourceSignalCount,
       });
+      const baseRating = buildBaseRating({
+        term: signal.trend_name,
+        heatScore: newHeat,
+        ebaySampleCount: sampleCount,
+        sourceSignalCount,
+        priceLow,
+        priceHigh,
+        avgPrice,
+        googleTrendHit,
+        corpusHit,
+        discoveryHit,
+      });
+      baseRating.confidenceScore = clampInt(
+        Math.round((baseRating.confidenceScore + baseConfidenceScore) / 2),
+        10,
+        99
+      );
+      const scored = await scoreWithAIAdjustments({
+        term: signal.trend_name,
+        track: trendVerdict.type === 'brand'
+          ? 'Brand'
+          : trendVerdict.type === 'brand_style'
+            ? 'Brand + Style'
+            : 'Style Category',
+        baseRating,
+        sampleCount,
+        sourceSignalCount,
+        heatScore: newHeat,
+        priceLow,
+        priceHigh,
+        avgPrice,
+      });
+      const isStyleLike = trendVerdict.type !== 'brand';
+      const maxStyleProfilesPerRun = Math.max(0, Number(process.env.STYLE_PROFILE_MAX_PER_RUN || 120));
+      let styleProfileResult = {
+        status: signal?.style_profile_status || 'missing',
+        error: signal?.style_profile_error || null,
+        profile: signal?.style_profile_json || null,
+      };
+      if (isStyleLike && shouldRefreshStyleProfile(signal)) {
+        if (styleProfileGeneratedThisRun < maxStyleProfilesPerRun) {
+          styleProfileResult = await generateStyleProfileForTitle(signal.trend_name, {
+            track: trendVerdict.type === 'brand_style' ? 'Brand + Style' : 'Style Category',
+            hook_brand: trendVerdict.brand || signal.hook_brand || null,
+            market_sentiment: scored.explanation.slice(0, 2).join(' '),
+            risk_factor: scored.riskFlags.slice(0, 2).join(', ') || signal.risk_factor || null,
+            visual_cues: Array.isArray(signal.visual_cues) ? signal.visual_cues.slice(0, 4) : [],
+          });
+        } else {
+          styleProfileResult = { status: 'missing', error: 'style_profile_run_cap_reached', profile: null };
+        }
+      } else if (!isStyleLike) {
+        styleProfileResult = { status: 'missing', error: 'not_style_track', profile: null };
+      }
       if (sampleCount < 5 && sourceSignalCount < 3) {
         await writeTrendRejectionLogs([{
           collector_source: 'market_signal_update',
@@ -1631,9 +2070,17 @@ async function syncMarketPulse() {
           ebay_discovery_hits: discoveryHit ? 1 : 0,
           source_signal_count: sourceSignalCount,
           mention_count: mentionCount,
-          confidence_score: confidenceScore,
+          confidence_score: scored.confidenceScore,
+          liquidity_score: scored.sourcingScore,
+          market_sentiment: scored.explanation.slice(0, 3).join(' '),
+          risk_factor: scored.riskFlags.join(', ') || signal.risk_factor || null,
           exit_price: avgPrice, 
           heat_score: newHeat,
+          style_profile_json: styleProfileResult.profile,
+          style_profile_version: STYLE_PROFILE_VERSION,
+          style_profile_updated_at: styleProfileResult.profile ? new Date().toISOString() : signal.style_profile_updated_at || null,
+          style_profile_status: styleProfileResult.status || signal.style_profile_status || 'missing',
+          style_profile_error: styleProfileResult.error || null,
           updated_at: new Date() 
         })
         .eq('id', signal.id);
@@ -1651,7 +2098,7 @@ async function syncMarketPulse() {
           });
         }
         console.log(
-          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | Mentions: ${mentionCount} | SignalScore: ${confidenceScore}`
+          `✅ ${signal.trend_name} updated: $${avgPrice} | Heat: ${newHeat} | Evidence: ${mentionCount} | C:${scored.confidenceScore} S:${scored.sourcingScore} (${scored.grade}, ${scored.model})`
         );
       }
     }

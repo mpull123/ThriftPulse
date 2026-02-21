@@ -10,6 +10,7 @@ import {
 } from "@/lib/marketIntel";
 import type { CollectorJob, CompCheck, ConfidenceLevel } from "@/lib/types";
 type DecisionLabel = "Buy" | "Maybe" | "Skip" | "Watchlist";
+type ActionBand = "Green" | "Yellow" | "Red";
 const SCOUT_PRESET_STORAGE_KEY = "thriftpulse_research_preset_v1";
 const SCOUT_PRESET_LIST_STORAGE_KEY = "thriftpulse_research_presets_v1";
 type ScoutPresetPayload = {
@@ -144,6 +145,30 @@ function inferProductFocus(text: string): "outerwear" | "footwear" | "bottoms" |
   if (/(jean|denim|cargo|pants|trouser|skirt|shorts)/.test(t)) return "bottoms";
   if (/(hoodie|sweatshirt|sweater|cardigan|knit)/.test(t)) return "knitwear";
   if (/(bag|tote|backpack|crossbody|handbag)/.test(t)) return "bags";
+  return "mixed";
+}
+
+type StyleItemType =
+  | "outerwear"
+  | "bottoms"
+  | "footwear"
+  | "knitwear"
+  | "bags"
+  | "dress"
+  | "top"
+  | "mixed";
+
+function detectStyleItemType(text: string): StyleItemType {
+  const t = String(text || "").toLowerCase();
+
+  // Outerwear is checked early so "denim jacket" maps to jacket behavior, not pants behavior.
+  if (/\b(jacket|coat|anorak|parka|shell|windbreaker|blazer|trench|barn coat|detroit)\b/.test(t)) return "outerwear";
+  if (/\b(boot|boots|sneaker|sneakers|trainer|shoe|shoes|loafer|clog|sandal)\b/.test(t)) return "footwear";
+  if (/\b(dress|gown|maxi|midi|slip dress)\b/.test(t)) return "dress";
+  if (/\b(hoodie|sweatshirt|sweater|cardigan|knit|crewneck)\b/.test(t)) return "knitwear";
+  if (/\b(bag|tote|crossbody|backpack|handbag|purse|satchel|messenger)\b/.test(t)) return "bags";
+  if (/\b(pants|trouser|trousers|jean|jeans|cargo|shorts|skirt|culotte|culottes|chino|double knee|carpenter)\b/.test(t)) return "bottoms";
+  if (/\b(shirt|tee|t-shirt|top|blouse|tank)\b/.test(t)) return "top";
   return "mixed";
 }
 
@@ -430,12 +455,388 @@ function formatSourceEvidence(sourceCounts: any): string {
   const google = Number(sourceCounts?.google || 0);
   const ai = Number(sourceCounts?.ai || 0);
   const discovery = Number(sourceCounts?.discovery || 0);
-  const parts: string[] = [];
-  if (ebay > 0) parts.push(`eBay ${toDollar(ebay)}`);
-  if (google > 0) parts.push(`Google ${toDollar(google)}`);
-  if (ai > 0) parts.push(`AI ${toDollar(ai)}`);
-  if (discovery > 0) parts.push(`Discovery ${toDollar(discovery)}`);
-  return parts.length ? `Sources: ${parts.join(" • ")}` : "Sources: No per-source evidence logged";
+  const active: string[] = [];
+  if (ebay > 0) active.push("eBay");
+  if (google > 0) active.push("Google");
+  if (ai > 0) active.push("AI");
+  if (discovery > 0) active.push("Discovery");
+  if (!active.length) return "Evidence: No active source signals";
+
+  return `Market evidence: ${getCompDepthLabel(ebay)} comp depth, ${getSourceMixLabel(sourceCounts)} source mix, active on ${active.join(", ")}.`;
+}
+
+function normalizeCueLine(text: string): string {
+  return String(text || "")
+    .replace(/^look for cue:\s*/i, "")
+    .replace(/^style cue:\s*/i, "")
+    .replace(/^brand cue:\s*/i, "")
+    .replace(/^confirm\s+/i, "")
+    .replace(/^prioritize\s+/i, "")
+    .replace(/^inspect\s+/i, "")
+    .replace(/before anything else\.?$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildNodeSnapshot(node: any, kind: "brand" | "style"): string[] {
+  const name = String(node?.name || "").trim();
+  const focus = inferProductFocus(name);
+  const [primary, secondary] = getFocusChecks(focus);
+  const buy = formatUsd(Number(node?.target_buy || 0));
+  const saleLow = formatUsd(Number(node?.expected_sale_low || node?.expected_sale || 0));
+  const saleHigh = formatUsd(Number(node?.expected_sale_high || node?.expected_sale || 0));
+  const firstCue = normalizeCueLine(String((node?.what_to_buy || [])[0] || ""));
+
+  if (kind === "brand") {
+    const lines: string[] = [
+      `In-store: start at ${name} labels, tags, and hardware before checking style details.`,
+      `In-store: ${normalizeCueLine(primary).toLowerCase()}.`,
+      `Price guardrail: buy at ${buy} or lower; typical sale band is ${saleLow}-${saleHigh}.`,
+    ];
+    if (firstCue) lines.push(`Best variant cue: ${firstCue}.`);
+    else if (secondary) lines.push(`Condition check: ${normalizeCueLine(secondary)}.`);
+    return lines.slice(0, 4);
+  }
+
+  const styleLines: string[] = [];
+  styleLines.push(`In-store: pull ${name.toLowerCase()} that match the core silhouette first.`);
+
+  if (focus === "outerwear") {
+    styleLines.push("In-store: prioritize intact lining, smooth zippers, and clean cuffs.");
+  } else if (focus === "footwear") {
+    styleLines.push("In-store: prioritize low heel drag, clean midsoles, and firm outsole grip.");
+  } else if (focus === "bottoms") {
+    styleLines.push("In-store: prioritize clean knees/inseams and stable waistband shape.");
+  } else if (focus === "knitwear") {
+    styleLines.push("In-store: prioritize low pilling, no shrink warp, and strong cuff shape.");
+  } else if (focus === "bags") {
+    styleLines.push("In-store: prioritize clean corners, healthy strap anchors, and working zippers.");
+  } else {
+    styleLines.push(`In-store: ${normalizeCueLine(primary).toLowerCase()}.`);
+  }
+
+  if (firstCue) styleLines.push(`Best variant cue: ${firstCue}.`);
+  const watchBrands = Array.isArray(node?.brands_to_watch) ? node.brands_to_watch.slice(0, 2).filter(Boolean) : [];
+  if (watchBrands.length > 0) styleLines.push(`Label shortcut: check ${watchBrands.join(" and ")} racks first.`);
+  styleLines.push(`Price guardrail: buy at ${buy} or lower; typical sale band is ${saleLow}-${saleHigh}.`);
+
+  return styleLines.slice(0, 4);
+}
+
+function getConditionBuyCaps(targetBuy: number) {
+  const base = Math.max(4, toDollar(targetBuy));
+  return {
+    excellent: Math.max(4, base),
+    good: Math.max(4, toDollar(base * 0.85)),
+    flawed: Math.max(4, toDollar(base * 0.6)),
+  };
+}
+
+function getFitSizePriority(node: any): string[] {
+  const name = String(node?.name || "").toLowerCase();
+  const itemType = detectStyleItemType(name);
+  const lines: string[] = [];
+
+  if (/\b(oversized|boxy|relaxed|wide-leg|baggy)\b/.test(name)) {
+    lines.push("Prioritize relaxed/boxy cuts over slim altered fits.");
+  } else if (/\b(cropped|fitted|tailored)\b/.test(name)) {
+    lines.push("Prioritize intentional cropped/tailored fits with clean structure.");
+  }
+
+  if (itemType === "bottoms") {
+    lines.push("Prioritize consistent waist + inseam tags; avoid heavily altered hems.");
+  } else if (itemType === "footwear") {
+    lines.push("Prioritize pairs with clear size tags and minimal heel/outsole deformation.");
+  } else if (itemType === "outerwear" || itemType === "knitwear" || itemType === "dress") {
+    lines.push("Prioritize clean shoulder drape and sleeves that are not stretched out.");
+  }
+
+  if (lines.length === 0) {
+    lines.push("Prioritize standard, easy-to-fit sizes over edge-case or heavily altered fits.");
+  }
+  return lines.slice(0, 2);
+}
+
+function getMaterialPriority(name: string): Array<{ label: string; score: number }> {
+  const n = String(name || "").toLowerCase();
+  const itemType = detectStyleItemType(n);
+
+  if (itemType === "outerwear" && /\bdenim\b/.test(n)) {
+    return [
+      { label: "Heavyweight denim shell (jacket cut)", score: 82 },
+      { label: "Sturdy hardware (zip/buttons/rivets)", score: 79 },
+    ];
+  }
+
+  const materials: Array<{ label: string; pattern: RegExp; score: number }> = [
+    { label: "Gore-Tex / technical shell", pattern: /gore-tex|shell|waterproof|windbreaker/, score: 88 },
+    { label: "Leather", pattern: /leather|suede/, score: 84 },
+    { label: "Wool / cashmere / mohair", pattern: /wool|cashmere|mohair|alpaca/, score: 82 },
+    { label: "Selvedge / heavyweight denim", pattern: /selvedge|denim|jean/, score: 80 },
+    { label: "Dense fleece / knit", pattern: /fleece|knit|sweater|cardigan|hoodie|sweatshirt/, score: 76 },
+    { label: "Structured cotton twill", pattern: /cargo|chino|work|carpenter/, score: 74 },
+  ];
+
+  const matched = materials.filter((m) => m.pattern.test(n)).slice(0, 3);
+  if (matched.length > 0) return matched.map((m) => ({ label: m.label, score: m.score }));
+  return [
+    { label: "Heavier-weight fabric", score: 72 },
+    { label: "Low-stretch durable construction", score: 70 },
+  ];
+}
+
+function getBrandSublineMatches(node: any): string[] {
+  const title = String(node?.name || "").toLowerCase();
+  const candidates = Array.isArray(node?.brands_to_watch) ? node.brands_to_watch : [];
+  const cues = Array.isArray(node?.what_to_buy)
+    ? node.what_to_buy.map((v: string) => normalizeCueLine(v)).filter(Boolean)
+    : [];
+
+  const styleHint = title
+    .replace(/\bvintage|retro|90s|y2k|style|trend|inspired\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return candidates
+    .slice(0, 3)
+    .map((brand: string, idx: number) => {
+      const b = String(brand || "").trim();
+      if (!b) return "";
+      const cue = String(cues[idx] || cues[0] || "").trim();
+      if (cue) return `${b}: prioritize variants that match "${cue}"`;
+      if (styleHint) return `${b}: prioritize cleaner ${styleHint} variants`;
+      return `${b}: prioritize better-condition core-line variants`;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function getFeaturedExamplesForNode(node: any): string[] {
+  const name = String(node?.name || "").trim();
+  const lower = name.toLowerCase();
+  const itemType = detectStyleItemType(lower);
+  const brands = Array.isArray(node?.brands_to_watch)
+    ? node.brands_to_watch.map((v: string) => String(v || "").trim()).filter(Boolean)
+    : [];
+  const cues = Array.isArray(node?.what_to_buy)
+    ? node.what_to_buy.map((v: string) => normalizeCueLine(v)).filter(Boolean)
+    : [];
+
+  const cleanedTitle = lower
+    .replace(/\bvintage|retro|90s|y2k|style|trend|inspired|looks?\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const typeFallback =
+    itemType === "outerwear" ? "jacket" :
+    itemType === "footwear" ? "sneakers" :
+    itemType === "bottoms" ? "pants" :
+    itemType === "knitwear" ? "knitwear" :
+    itemType === "bags" ? "bag" :
+    itemType === "dress" ? "dress" :
+    "piece";
+
+  const examples: string[] = [];
+  for (const brand of brands.slice(0, 3)) {
+    examples.push(`${brand} ${cleanedTitle || typeFallback}`.replace(/\s+/g, " ").trim());
+  }
+  for (const cue of cues.slice(0, 3)) {
+    if (cue.length >= 8) examples.push(cue);
+  }
+  if (examples.length === 0) {
+    examples.push(`${name} in strong condition`, `${typeFallback} with clear silhouette`, `${typeFallback} with consistent sold comps`);
+  }
+  return Array.from(new Set(examples)).slice(0, 3);
+}
+
+function getStyleFindPlan(node: any): { styles: string[]; zones: string[]; avoid: string[] } {
+  const name = String(node?.name || "");
+  const n = name.toLowerCase();
+  const itemType = detectStyleItemType(n);
+  const cues = Array.isArray(node?.what_to_buy)
+    ? node.what_to_buy.map((v: string) => normalizeCueLine(v)).filter(Boolean)
+    : [];
+  const titleWords = n
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !["vintage", "retro", "style", "trend", "the", "and", "with", "for"].includes(w));
+  const keyA = titleWords[0] || "";
+  const keyB = titleWords[1] || "";
+  const typeLabel =
+    itemType === "outerwear" ? "outerwear" :
+    itemType === "footwear" ? "footwear" :
+    itemType === "bottoms" ? "bottoms" :
+    itemType === "knitwear" ? "knitwear" :
+    itemType === "bags" ? "bags" :
+    itemType === "dress" ? "dresses" :
+    "pieces";
+
+  const stylesFromCues = cues
+    .slice(0, 3)
+    .map((cue: string) => cue.replace(/\.$/, "").trim())
+    .filter(Boolean);
+  const stylesFromTitle = [
+    `${keyA ? `${keyA} ` : ""}${typeLabel} with clean structure and low visible wear`.replace(/\s+/g, " ").trim(),
+    `${keyB ? `${keyB} ` : ""}${typeLabel} in stronger fabric and better condition`.replace(/\s+/g, " ").trim(),
+    `${name} variants that match sold-comp silhouettes`.replace(/\s+/g, " ").trim(),
+  ];
+
+  const styles = Array.from(new Set([...stylesFromCues, ...stylesFromTitle])).slice(0, 3);
+
+  const zoneByType: Record<StyleItemType, string[]> = {
+    outerwear: ["Outerwear rack first, then seasonal feature section"],
+    footwear: ["Footwear wall first, then new-arrivals shelves"],
+    bottoms: ["Denim/pants wall first, then workwear racks"],
+    knitwear: ["Sweater/hoodie rack first, then athletic tops"],
+    bags: ["Bag shelf first, then accessories bins"],
+    dress: ["Dress rack by length first, then vintage section"],
+    top: ["Tops rack first, then graphic/athletic section"],
+    mixed: ["Primary category rack first, then new arrivals"],
+  };
+
+  const avoidFromCues = cues
+    .filter((c: string) => /skip|pass|avoid|risk|damage|wear|broken|crack|tear|stain|pilling/i.test(c))
+    .slice(0, 1);
+  const avoidFallback = `Avoid ${typeLabel} with structural damage or condition issues that break margin.`;
+
+  return {
+    styles,
+    zones: zoneByType[itemType] || zoneByType.mixed,
+    avoid: avoidFromCues.length ? avoidFromCues : [avoidFallback],
+  };
+}
+
+function getUniqueFindFirstItems(styles: string[], examples: string[]): string[] {
+  const normalize = (v: string) =>
+    String(v || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const styleNorm = styles.map(normalize).filter(Boolean);
+  const out: string[] = [];
+  for (const raw of examples) {
+    const e = normalize(raw);
+    if (!e) continue;
+    const overlaps = styleNorm.some((s) => s === e || s.includes(e) || e.includes(s));
+    if (!overlaps) out.push(raw);
+  }
+  return Array.from(new Set(out)).slice(0, 3);
+}
+
+function normalizeProfileList(value: any, maxItems: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const line = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!line || line.length < 6 || line.length > 120) continue;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function isNearDuplicate(a: string, b: string): boolean {
+  const normalize = (v: string) =>
+    String(v || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const at = new Set(normalize(a).split(" ").filter((w) => w.length > 2));
+  const bt = new Set(normalize(b).split(" ").filter((w) => w.length > 2));
+  if (!at.size || !bt.size) return false;
+  let intersect = 0;
+  for (const token of at) if (bt.has(token)) intersect += 1;
+  return intersect / Math.max(at.size, bt.size) >= 0.65;
+}
+
+function getStyleProfileFromNode(node: any): {
+  ok: boolean;
+  status: string;
+  reason: string;
+  styles_to_find: string[];
+  find_these_first: string[];
+  where_to_check_first: string[];
+  pass_if: string[];
+  confidence_note: string;
+} {
+  const status = String(node?.style_profile_status || "missing");
+  const raw = node?.style_profile_json;
+  const payload = raw && typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+  if (!payload || typeof payload !== "object") {
+    return {
+      ok: false,
+      status,
+      reason: String(node?.style_profile_error || "No generated style profile on this node."),
+      styles_to_find: [],
+      find_these_first: [],
+      where_to_check_first: [],
+      pass_if: [],
+      confidence_note: "",
+    };
+  }
+
+  const styles = normalizeProfileList(payload?.styles_to_find, 3);
+  const findFirst = normalizeProfileList(payload?.find_these_first, 3).filter(
+    (line) => !styles.some((s) => isNearDuplicate(s, line))
+  );
+  const where = normalizeProfileList(payload?.where_to_check_first, 2);
+  const passIf = normalizeProfileList(payload?.pass_if, 2);
+
+  const ok = styles.length > 0 && where.length > 0 && passIf.length > 0 && status === "ok";
+  return {
+    ok,
+    status,
+    reason: ok ? "" : String(node?.style_profile_error || "Generated profile is missing required sections."),
+    styles_to_find: styles,
+    find_these_first: findFirst,
+    where_to_check_first: where,
+    pass_if: passIf,
+    confidence_note: String(payload?.confidence_note || "").replace(/\s+/g, " ").trim(),
+  };
+}
+
+function buildWhyNow(node: any): string {
+  const depth = getCompDepthLabel(Number(node?.source_counts?.ebay || 0));
+  const mix = getSourceMixLabel(node?.source_counts || {});
+  const compAge = String(node?.compAgeLabel || "Unknown");
+  const action = String(node?.action_recommendation || "Watch");
+  const profit = formatUsd(Number(node?.expected_profit || 0));
+  return `${action}: ${depth} comp depth, ${mix.toLowerCase()} source mix, comps ${compAge.toLowerCase()}, and estimated net ${profit}.`;
+}
+
+function getCompDepthScore(ebayCount: number): number {
+  const n = Number(ebayCount || 0);
+  if (n >= 160) return 5;
+  if (n >= 90) return 4;
+  if (n >= 40) return 3;
+  if (n >= 12) return 2;
+  if (n > 0) return 1;
+  return 0;
+}
+
+function getCompDepthLabel(ebayCount: number): string {
+  const score = getCompDepthScore(ebayCount);
+  if (score === 5) return "Deep";
+  if (score === 4) return "Strong";
+  if (score === 3) return "Usable";
+  if (score === 2) return "Light";
+  if (score === 1) return "Thin";
+  return "None";
+}
+
+function getSourceMixLabel(sourceCounts: any): string {
+  const types = getSourceTypeCount(sourceCounts);
+  if (types >= 3) return "Broad";
+  if (types === 2) return "Multi";
+  if (types === 1) return "Single";
+  return "None";
 }
 
 function getSourceTypeCount(sourceCounts: any): number {
@@ -451,6 +852,83 @@ function getEvidenceQuality(sampleSize: number, sourceTypeCount: number): "Broad
   if (sampleSize >= 25 && sourceTypeCount >= 2) return "Broad";
   if (sampleSize >= 10 || sourceTypeCount >= 2) return "Moderate";
   return "Narrow";
+}
+
+function getCompStatus(latestComp: CompCheck | null): "fresh" | "stale" | "none" {
+  const ageDays = getCompAgeDays(latestComp);
+  if (!latestComp || ageDays === null) return "none";
+  if (ageDays <= 14) return "fresh";
+  return "stale";
+}
+
+function getActionBand(score: number): ActionBand {
+  if (score >= 75) return "Green";
+  if (score >= 55) return "Yellow";
+  return "Red";
+}
+
+function getActionRecommendation(score: number): "Buy Now" | "Buy If Cheap" | "Watch" | "Pass" {
+  if (score >= 85) return "Buy Now";
+  if (score >= 70) return "Buy If Cheap";
+  if (score >= 50) return "Watch";
+  return "Pass";
+}
+
+function getActionBandClasses(band: ActionBand): string {
+  if (band === "Green") return "bg-emerald-500/10 text-emerald-500";
+  if (band === "Yellow") return "bg-amber-500/10 text-amber-500";
+  return "bg-rose-500/10 text-rose-500";
+}
+
+function buildActionRating({
+  confidence,
+  compStatus,
+  compDepthScore,
+  sourceTypeCount,
+  expectedProfit,
+  expectedSale,
+  targetBuy,
+  heat,
+  riskText,
+}: {
+  confidence: ConfidenceLevel;
+  compStatus: "fresh" | "stale" | "none";
+  compDepthScore: number;
+  sourceTypeCount: number;
+  expectedProfit: number;
+  expectedSale: number;
+  targetBuy: number;
+  heat: number;
+  riskText: string;
+}) {
+  const compFreshnessPoints = compStatus === "fresh" ? 12 : compStatus === "stale" ? 6 : 2;
+  const sourceConfidence = Math.min(30, compFreshnessPoints + compDepthScore * 3 + Math.min(3, sourceTypeCount) * 3);
+
+  const marginPct = expectedSale > 0 ? expectedProfit / expectedSale : 0;
+  const marginStrength =
+    Math.max(0, Math.min(30, Math.round(marginPct * 60) + Math.min(12, Math.round(expectedProfit / 2)) + (targetBuy <= 25 ? 4 : 0)));
+
+  const confidenceBonus = confidence === "high" ? 4 : confidence === "med" ? 2 : 0;
+  const sellSpeed = Math.max(0, Math.min(20, Math.round(heat * 0.14) + confidenceBonus));
+
+  const riskTerms = String(riskText || "").toLowerCase();
+  const risky =
+    riskTerms.includes("replica") ||
+    riskTerms.includes("auth") ||
+    riskTerms.includes("counterfeit") ||
+    riskTerms.includes("fake");
+  const riskPenalty = Math.max(0, Math.min(20, (risky ? 10 : 0) + (confidence === "low" ? 6 : 0) + (compStatus === "none" ? 4 : 0)));
+
+  const score = Math.max(0, Math.min(100, sourceConfidence + marginStrength + sellSpeed - riskPenalty));
+  const band = getActionBand(score);
+  const recommendation = getActionRecommendation(score);
+  const reasons = [
+    compStatus === "fresh" ? "Fresh comps" : compStatus === "stale" ? "Stale comps" : "No comps",
+    marginStrength >= 20 ? "Strong margin" : marginStrength >= 12 ? "Fair margin" : "Thin margin",
+    riskPenalty <= 6 ? "Lower risk" : "Higher risk",
+  ];
+
+  return { score, band, recommendation, reasons };
 }
 
 function getHoldTimeLabel({
@@ -947,9 +1425,21 @@ export default function SectionScout({
       ai: Number(node.aiHitTotal || 0),
       discovery: Number(node.discoveryHitTotal || 0),
     };
+    const compStatus = getCompStatus(node.latestComp);
     const sampleSize = Number(node.latestComp?.sample_size || 0);
     const sourceTypeCount = getSourceTypeCount(sourceCounts);
     const evidenceQuality = getEvidenceQuality(sampleSize, sourceTypeCount);
+    const actionRating = buildActionRating({
+      confidence,
+      compStatus,
+      compDepthScore: getCompDepthScore(sourceCounts.ebay),
+      sourceTypeCount,
+      expectedProfit: Number(plan.expectedProfit || 0),
+      expectedSale: Number(plan.expectedSale || 0),
+      targetBuy: Number(plan.targetBuy || 0),
+      heat: avgHeat,
+      riskText,
+    });
     const holdTime = getHoldTimeLabel({
       heat: avgHeat,
       mentions,
@@ -995,6 +1485,10 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
+      action_score: actionRating.score,
+      action_band: actionRating.band,
+      action_recommendation: actionRating.recommendation,
+      action_reasons: actionRating.reasons,
       buy_cap_warning: plan.buyCapWarning,
       condition_curve: {
         poor: plan.conditionPoor,
@@ -1090,9 +1584,21 @@ export default function SectionScout({
       ai: Number(mergedSignal?.ai_corpus_hits || 0),
       discovery: Number(mergedSignal?.ebay_discovery_hits || 0),
     };
+    const compStatus = getCompStatus(latestComp);
     const sampleSize = Number(latestComp?.sample_size || 0);
     const sourceTypeCount = getSourceTypeCount(sourceCounts);
     const evidenceQuality = getEvidenceQuality(sampleSize, sourceTypeCount);
+    const actionRating = buildActionRating({
+      confidence,
+      compStatus,
+      compDepthScore: getCompDepthScore(sourceCounts.ebay),
+      sourceTypeCount,
+      expectedProfit: Number(plan.expectedProfit || 0),
+      expectedSale: Number(plan.expectedSale || 0),
+      targetBuy: Number(plan.targetBuy || 0),
+      heat: Number(mergedSignal.heat_score || 0),
+      riskText: String(mergedSignal.risk_factor || ""),
+    });
     const holdTime = getHoldTimeLabel({
       heat: Number(mergedSignal.heat_score || 0),
       mentions,
@@ -1123,6 +1629,10 @@ export default function SectionScout({
       comp_high: plan.compHigh,
       decision: plan.decision,
       decision_reason: plan.decisionReason,
+      action_score: actionRating.score,
+      action_band: actionRating.band,
+      action_recommendation: actionRating.recommendation,
+      action_reasons: actionRating.reasons,
       buy_cap_warning: plan.buyCapWarning,
       condition_curve: {
         poor: plan.conditionPoor,
@@ -1142,6 +1652,10 @@ export default function SectionScout({
         representative?.hook_brand
       ),
       brandRef: representative?.hook_brand || null,
+      style_profile_json: representative?.style_profile_json ?? null,
+      style_profile_status: representative?.style_profile_status || "missing",
+      style_profile_updated_at: representative?.style_profile_updated_at || null,
+      style_profile_error: representative?.style_profile_error || null,
       style_tier: String(representative?.style_tier || "").toLowerCase() === "core"
         ? "core"
         : String(representative?.style_tier || "").toLowerCase() === "niche"
@@ -1664,14 +2178,14 @@ export default function SectionScout({
               </thead>
               <tbody>
                 {[
-                  { key: "confidence", label: "Confidence", higher: true, value: (n: any) => confidenceToScore(n.confidence), format: (n: any) => String(n.confidence || "low").toUpperCase() },
+                  { key: "action", label: "Action Score", higher: true, value: (n: any) => Number(n?.action_score || 0), format: (n: any) => `${Number(n?.action_score || 0)}` },
                   { key: "heat", label: "Heat", higher: true, value: (n: any) => Number(n.heat || 0), format: (n: any) => `${Number(n.heat || 0)}` },
                   {
                     key: "mentions",
-                    label: "eBay Comps",
+                    label: "Comp Depth",
                     higher: true,
-                    value: (n: any) => Number(n?.source_counts?.ebay || 0),
-                    format: (n: any) => `${toDollar(Number(n?.source_counts?.ebay || 0))}`,
+                    value: (n: any) => getCompDepthScore(Number(n?.source_counts?.ebay || 0)),
+                    format: (n: any) => `${getCompDepthLabel(Number(n?.source_counts?.ebay || 0))}`,
                   },
                   { key: "buy", label: "Target Buy", higher: false, value: (n: any) => Number(n.target_buy || 0), format: (n: any) => formatUsd(n.target_buy || 0) },
                   { key: "net", label: "Expected Net", higher: true, value: (n: any) => Number(n.expected_profit || 0), format: (n: any) => formatUsd(n.expected_profit || 0) },
@@ -1706,7 +2220,13 @@ export default function SectionScout({
           <h4 className="text-4xl font-black italic uppercase tracking-tighter">Brand Nodes</h4>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-          {visibleBrandNodes.map((node) => (
+          {visibleBrandNodes.map((node) => {
+            const snapshotLines = buildNodeSnapshot(node, "brand");
+            const conditionCaps = getConditionBuyCaps(Number(node?.target_buy || 0));
+            const fitSize = getFitSizePriority(node);
+            const materialPriority = getMaterialPriority(node?.name || "");
+            const whyNow = buildWhyNow(node);
+            return (
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
@@ -1721,27 +2241,22 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
-                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
-                     {node.confidence && <ConfidencePill confidence={node.confidence} />}
-                     {node.decision && (
-                       <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
-                         node.decision === "Buy"
-                           ? "bg-emerald-500/10 text-emerald-500"
-                           : node.decision === "Maybe"
-                             ? "bg-amber-500/10 text-amber-500"
-                             : node.decision === "Watchlist"
-                               ? "bg-blue-500/10 text-blue-500"
-                             : "bg-rose-500/10 text-rose-500"
-                       }`}>
-                         {node.decision}
-                       </span>
-                     )}
+                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
+                       Action {toDollar(Number(node?.action_score || 0))}
+                     </span>
+                     <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
+                       {node?.action_band || "Red"}
+                     </span>
+                     <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
+                       {node?.action_recommendation || "Watch"}
+                     </span>
                   </div>
                   <h3 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">eBay comps</p>
-                  <p className="text-lg font-black italic text-emerald-500 leading-none tabular-nums">{toDollar(Number(node?.source_counts?.ebay || 0))}</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Comp depth</p>
+                  <p className="text-lg font-black italic text-emerald-500 leading-none">{getCompDepthLabel(Number(node?.source_counts?.ebay || 0))}</p>
+                  <p className="text-[8px] font-black uppercase tracking-wider text-slate-400 mt-1">{`Mix ${getSourceMixLabel(node?.source_counts)}`}</p>
                 </div>
               </div>
               {viewMode === "detailed" && (
@@ -1754,16 +2269,54 @@ export default function SectionScout({
                      {`Evidence ${node.evidence_quality || "Narrow"}`}
                    </span>
                  </div>
+                 <div className="flex flex-wrap gap-1 mb-3">
+                   {(node?.action_reasons || []).slice(0, 3).map((reason: string, idx: number) => (
+                     <span
+                       key={`${reason}-${idx}`}
+                       className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                     >
+                       {reason}
+                     </span>
+                   ))}
+                 </div>
+                 <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-3">
+                   {whyNow}
+                 </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-2 italic">
-                   <CheckSquare size={12} className="mr-2 text-emerald-500" /> Top Targets
+                   <CheckSquare size={12} className="mr-2 text-emerald-500" /> Brand Snapshot
                  </p>
                  <ul className="list-disc pl-5 space-y-1.5">
-                  {(node.what_to_buy || []).slice(0, 2).map((item: string, i: number) => (
+                  {snapshotLines.map((item: string, i: number) => (
                     <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
-                      {toTargetBullet(item, "brand")}
+                      {item}
                     </li>
                   ))}
                  </ul>
+                 <div className="mt-3 space-y-3">
+                   <div>
+                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Buy Caps by Condition</p>
+                     <ul className="list-disc pl-5 space-y-1">
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Excellent: ${formatUsd(conditionCaps.excellent)}`}</li>
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Good: ${formatUsd(conditionCaps.good)}`}</li>
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Flawed: ${formatUsd(conditionCaps.flawed)}`}</li>
+                     </ul>
+                   </div>
+                   <div>
+                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Fit & Material Priorities</p>
+                     <ul className="list-disc pl-5 space-y-1">
+                       {fitSize.slice(0, 2).map((item: string, i: number) => (
+                         <li key={`b-fit-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                           {item}
+                         </li>
+                       ))}
+                       {materialPriority.slice(0, 2).map((m, i: number) => (
+                         <li key={`b-mat-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                           {`${m.label} (priority ${m.score}/100)`}
+                         </li>
+                       ))}
+                     </ul>
+                   </div>
+                 </div>
                  {node.buy_cap_warning && (
                    <p className="mt-3 text-[9px] font-black uppercase tracking-wider text-amber-500">
                      {node.buy_cap_warning}
@@ -1778,7 +2331,7 @@ export default function SectionScout({
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                    {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
+                    {`Decision note: ${node.decision_reason || "Review condition and comps before buying."}`}
                   </p>
                   <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-slate-400">
                     {formatSourceEvidence(node.source_counts)} • {`Updated ${formatDateLabel(node.last_updated_at)}`}
@@ -1840,7 +2393,7 @@ export default function SectionScout({
                 </button>
               </div>
             </div>
-          ))}
+          )})}
         </div>
         {visibleBrandNodes.length === 0 && (
           <div className="mt-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center">
@@ -1860,7 +2413,12 @@ export default function SectionScout({
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-          {visibleTrendNodes.map((node: any) => (
+          {visibleTrendNodes.map((node: any) => {
+            const snapshotLines = buildNodeSnapshot(node, "style");
+            const conditionCaps = getConditionBuyCaps(Number(node?.target_buy || 0));
+            const styleProfile = getStyleProfileFromNode(node);
+            const whyNow = buildWhyNow(node);
+            return (
             <div 
               key={node.id} 
               onClick={() => onNodeSelect(node)} 
@@ -1875,27 +2433,22 @@ export default function SectionScout({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                      <span className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter flex items-center"><Hash size={10} className="mr-1" /> {node.source}</span>
-                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Decision</span>
-                     {node.confidence && <ConfidencePill confidence={node.confidence} />}
-                     {node.decision && (
-                       <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
-                         node.decision === "Buy"
-                           ? "bg-emerald-500/10 text-emerald-500"
-                           : node.decision === "Maybe"
-                             ? "bg-amber-500/10 text-amber-500"
-                             : node.decision === "Watchlist"
-                               ? "bg-blue-500/10 text-blue-500"
-                             : "bg-rose-500/10 text-rose-500"
-                       }`}>
-                         {node.decision}
-                       </span>
-                     )}
+                     <span className="bg-blue-500/10 text-blue-500 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">
+                       Action {toDollar(Number(node?.action_score || 0))}
+                     </span>
+                     <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
+                       {node?.action_band || "Red"}
+                     </span>
+                     <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${getActionBandClasses((node?.action_band || "Red") as ActionBand)}`}>
+                       {node?.action_recommendation || "Watch"}
+                     </span>
                   </div>
                   <h3 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white leading-tight break-words line-clamp-2">{node.name}</h3>
                 </div>
                 <div className="text-right shrink-0 ml-3">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">eBay comps</p>
-                  <p className="text-lg font-black italic text-blue-500 leading-none tabular-nums">{toDollar(Number(node?.source_counts?.ebay || 0))}</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Comp depth</p>
+                  <p className="text-lg font-black italic text-blue-500 leading-none">{getCompDepthLabel(Number(node?.source_counts?.ebay || 0))}</p>
+                  <p className="text-[8px] font-black uppercase tracking-wider text-slate-400 mt-1">{`Mix ${getSourceMixLabel(node?.source_counts)}`}</p>
                 </div>
               </div>
               
@@ -1909,16 +2462,97 @@ export default function SectionScout({
                      {`Evidence ${node.evidence_quality || "Narrow"}`}
                    </span>
                  </div>
+                 <div className="flex flex-wrap gap-1 mb-3">
+                   {(node?.action_reasons || []).slice(0, 3).map((reason: string, idx: number) => (
+                     <span
+                       key={`${reason}-${idx}`}
+                       className="inline-flex items-center rounded-full bg-slate-200/70 dark:bg-slate-800 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                     >
+                       {reason}
+                     </span>
+                   ))}
+                 </div>
+                 <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-3">
+                   {whyNow}
+                 </p>
                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center mb-2 italic">
-                   <CheckSquare size={14} className="mr-2 text-blue-500" /> Top Targets
+                   <CheckSquare size={14} className="mr-2 text-blue-500" /> In-Store Find Plan
                  </p>
                  <ul className="list-disc pl-5 space-y-1.5">
-                   {node.what_to_buy && node.what_to_buy.slice(0, 2).map((item: string, i: number) => (
+                   {snapshotLines.map((item: string, i: number) => (
                      <li key={i} className="text-xs font-bold text-slate-700 dark:text-slate-300 italic">
-                       {toTargetBullet(item, "style")}
+                       {item}
                      </li>
                    ))}
                  </ul>
+                 <div className="mt-3 space-y-3">
+                   {styleProfile.ok ? (
+                     <>
+                       <div>
+                         <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Styles to Find</p>
+                         <ul className="list-disc pl-5 space-y-1">
+                           {styleProfile.styles_to_find.map((item: string, i: number) => (
+                             <li key={`style-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                               {item}
+                             </li>
+                           ))}
+                         </ul>
+                       </div>
+                       {styleProfile.find_these_first.length > 0 && (
+                         <div>
+                           <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Find These First</p>
+                           <ul className="list-disc pl-5 space-y-1">
+                             {styleProfile.find_these_first.map((item: string, i: number) => (
+                               <li key={`find-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                 {item}
+                               </li>
+                             ))}
+                           </ul>
+                         </div>
+                       )}
+                       <div>
+                         <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Where to Check First</p>
+                         <ul className="list-disc pl-5 space-y-1">
+                           {styleProfile.where_to_check_first.map((item: string, i: number) => (
+                             <li key={`zone-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                               {item}
+                             </li>
+                           ))}
+                         </ul>
+                       </div>
+                       <div>
+                         <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Pass If</p>
+                         <ul className="list-disc pl-5 space-y-1">
+                           {styleProfile.pass_if.map((item: string, i: number) => (
+                             <li key={`pass-${i}`} className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                               {item}
+                             </li>
+                           ))}
+                         </ul>
+                       </div>
+                       {styleProfile.confidence_note && (
+                         <p className="text-[9px] font-black uppercase tracking-wider text-slate-500">
+                           {`Profile note: ${styleProfile.confidence_note}`}
+                         </p>
+                       )}
+                     </>
+                   ) : (
+                     <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
+                       <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">Style guidance unavailable</p>
+                       <p className="mt-1 text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                         {`Status: ${styleProfile.status}. ${styleProfile.reason || "Run a sync to regenerate this profile."}`}
+                       </p>
+                     </div>
+                   )}
+                   <div>
+                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">Buy Caps by Condition</p>
+                     <ul className="list-disc pl-5 space-y-1">
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Excellent: ${formatUsd(conditionCaps.excellent)}`}</li>
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Good: ${formatUsd(conditionCaps.good)}`}</li>
+                       <li className="text-xs font-bold text-slate-700 dark:text-slate-300">{`Flawed: ${formatUsd(conditionCaps.flawed)}`}</li>
+                     </ul>
+                   </div>
+                 </div>
                  {Array.isArray(node.brands_to_watch) && node.brands_to_watch.length > 0 && (
                    <p className="mt-3 text-[9px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-300">
                      {`Watch brands: ${node.brands_to_watch.slice(0, 2).join(" • ")}`}
@@ -1939,7 +2573,7 @@ export default function SectionScout({
                     {`Buy <= ${formatUsd(node.target_buy ?? node.entry_price)} | Sale ${formatUsd(node.expected_sale_low ?? node.expected_sale ?? node.entry_price)}-${formatUsd(node.expected_sale_high ?? node.expected_sale ?? node.entry_price)} | Net +${formatUsd(node.expected_profit ?? 0)}`}
                   </p>
                   <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                    {node.confidence_reason || "Confidence is based on comp recency, sample size, and source evidence."}
+                    {`Decision note: ${node.decision_reason || "Review condition and comps before buying."}`}
                   </p>
                   {node.classification_flag && (
                     <p className="mt-2 text-[9px] font-black uppercase tracking-wider text-amber-500">
@@ -2040,7 +2674,7 @@ export default function SectionScout({
                 </button>
               </div>
             </div>
-          ))}
+          )})}
         </div>
         {visibleTrendNodes.length === 0 && (
           <div className="mt-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center">
