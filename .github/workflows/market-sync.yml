@@ -27,6 +27,56 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STYLE_PROFILE_MODEL: ${{ vars.STYLE_PROFILE_MODEL }}
+          STYLE_PROFILE_MAX_PER_RUN: ${{ vars.STYLE_PROFILE_MAX_PER_RUN }}
+          STYLE_PROFILE_TTL_DAYS: ${{ vars.STYLE_PROFILE_TTL_DAYS }}
         run: |
           node scripts/sync-market-data.js
           node scripts/generate-listings.js
+
+      - name: Install PostgreSQL Client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: READ ONLY CHECK - Style Profiles Coverage
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "
+          select
+            count(*) as total,
+            count(*) filter (where style_profile_json is not null) as with_profile,
+            count(*) filter (where style_profile_status = 'ok') as ok_profiles
+          from market_signals
+          where archived_at is null;
+          "
+
+      - name: READ ONLY CHECK - Style Profile Status Breakdown
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "
+          select coalesce(style_profile_status,'missing') as status, count(*) as count_rows
+          from market_signals
+          where archived_at is null
+          group by 1
+          order by 2 desc;
+          "
+
+      - name: READ ONLY QA - Style Profiles Not OK
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "
+          select
+            trend_name,
+            track,
+            style_profile_status,
+            style_profile_error,
+            style_profile_updated_at,
+            updated_at
+          from market_signals
+          where archived_at is null
+            and coalesce(style_profile_status,'missing') <> 'ok'
+          order by updated_at desc
+          limit 200;
+          "
