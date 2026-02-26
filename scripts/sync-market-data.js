@@ -320,6 +320,41 @@ function parseRssOrAtomTitles(xmlText) {
     .filter(Boolean);
 }
 
+function parseGoogleTrendsApiTitles(bodyText) {
+  const raw = String(bodyText || '').trim();
+  if (!raw) return [];
+  const normalized = raw.startsWith(")]}'") ? raw.replace(/^\)\]\}'\s*/, '') : raw;
+  let payload = null;
+  try {
+    payload = JSON.parse(normalized);
+  } catch (_err) {
+    return [];
+  }
+
+  const days = Array.isArray(payload?.default?.trendingSearchesDays)
+    ? payload.default.trendingSearchesDays
+    : [];
+  const titles = [];
+  for (const day of days) {
+    const searches = Array.isArray(day?.trendingSearches) ? day.trendingSearches : [];
+    for (const item of searches) {
+      const query = compactWhitespace(
+        item?.title?.query ||
+          item?.title ||
+          item?.formattedTitle ||
+          ''
+      );
+      if (query) titles.push(query);
+      const related = Array.isArray(item?.relatedQueries) ? item.relatedQueries : [];
+      for (const rel of related) {
+        const relQuery = compactWhitespace(rel?.query || rel?.title || '');
+        if (relQuery) titles.push(relQuery);
+      }
+    }
+  }
+  return titles;
+}
+
 function toGoogleNewsRssUrl(query) {
   const q = compactWhitespace(query);
   if (!q) return '';
@@ -1406,6 +1441,24 @@ async function generateFashionCandidatesFromCorpusAI(corpusHeadlines, existingTe
   return candidates.slice(0, maxCandidates);
 }
 
+function generateFashionCandidatesFromCorpusFallback(corpusHeadlines) {
+  const raw = [];
+  for (const title of Array.isArray(corpusHeadlines) ? corpusHeadlines : []) {
+    const extracted = extractFashionEntityTermsFromTitle(title);
+    for (const term of extracted) {
+      const verdict = classifyTrendTermDiscovery(term);
+      if (!verdict.ok) continue;
+      if (!verdict.brand && !hasStyleProductNoun(term)) continue;
+      raw.push(normalizeTrendTerm(term));
+    }
+  }
+  const deduped = [...new Set(raw.map((t) => compactWhitespace(t)).filter(Boolean))];
+  return applyDiversityCaps(
+    deduped,
+    Number(process.env.FASHION_CORPUS_FALLBACK_BUCKET_CAP || 10)
+  ).slice(0, Number(process.env.MAX_AI_CANDIDATES || 250));
+}
+
 async function fetchGoogleTrendsTerms() {
   const geos = String(process.env.GOOGLE_TRENDS_GEOS || 'US,GB,CA,AU')
     .split(',')
@@ -1415,6 +1468,10 @@ async function fetchGoogleTrendsTerms() {
   const urls = geos.flatMap((geo) => [
     `https://trends.google.com/trending/rss?geo=${encodeURIComponent(geo)}`,
     `https://trends.google.com/trends/trendingsearches/daily/rss?geo=${encodeURIComponent(geo)}`,
+  ]);
+  const apiUrls = geos.flatMap((geo) => [
+    `https://trends.google.com/trends/api/dailytrends?hl=en-US&tz=-480&geo=${encodeURIComponent(geo)}&ns=15`,
+    `https://trends.google.com/trends/api/dailytrends?hl=en-US&tz=-480&geo=${encodeURIComponent(geo)}&ns=15&cat=18`,
   ]);
 
   const aggregatedTitles = [];
@@ -1446,13 +1503,42 @@ async function fetchGoogleTrendsTerms() {
 
   const rawTitles = [...new Set(aggregatedTitles.map((t) => compactWhitespace(t)).filter(Boolean))];
   if (!rawTitles.length) {
+    for (const url of apiUrls) {
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent': 'thriftpulse-sync/1.0',
+            Accept: 'application/json,text/plain,*/*'
+          }
+        });
+        const body = await res.text();
+        if (!res.ok) {
+          const snippet = body.slice(0, 120).replace(/\s+/g, ' ');
+          failures.push(`api status=${res.status} url=${url} body="${snippet}"`);
+          continue;
+        }
+        const apiTitles = parseGoogleTrendsApiTitles(body).slice(0, 120);
+        if (!apiTitles.length) {
+          failures.push(`api ok_but_empty url=${url}`);
+          continue;
+        }
+        aggregatedTitles.push(...apiTitles);
+      } catch (err) {
+        failures.push(`api fetch_error url=${url} err=${String(err?.message || 'unknown')}`);
+      }
+      if (aggregatedTitles.length > 0) break;
+    }
+  }
+
+  const finalRawTitles = [...new Set(aggregatedTitles.map((t) => compactWhitespace(t)).filter(Boolean))];
+  if (!finalRawTitles.length) {
     throw new Error(`google_trends_failed ${failures[0] || 'no_titles_returned'}`);
   }
 
   const rawTerms = [];
   const filteredTerms = [];
   const titleBrandTerms = [];
-  for (const title of rawTitles) {
+  for (const title of finalRawTitles) {
     const extracted = [
       ...extractTermsFromTrendTitle(title),
       ...extractFashionEntityTermsFromTitle(title),
@@ -1492,7 +1578,7 @@ async function fetchGoogleTrendsTerms() {
     Number(process.env.GOOGLE_TRENDS_BUCKET_CAP || 8)
   ).slice(0, Number(process.env.MAX_GOOGLE_TRENDS_TERMS || 120));
   console.log(
-    `📊 Google Trends filter stats: geos=${geos.length} titles=${rawTitles.length} raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strict=${strictFiltered.length} relaxed=${relaxedFiltered.length} brandFallback=${brandFallback.length} kept=${uniqueFiltered.length}`
+    `📊 Google Trends filter stats: geos=${geos.length} titles=${finalRawTitles.length} raw=${uniqueRaw.length} keywordFiltered=${keywordFiltered.length} strict=${strictFiltered.length} relaxed=${relaxedFiltered.length} brandFallback=${brandFallback.length} kept=${uniqueFiltered.length}`
   );
   return { rawTerms: uniqueRaw, filteredTerms: uniqueFiltered };
 }
@@ -1895,6 +1981,8 @@ async function seedSignalsFromSources(existingSignals, discoveredTerms, sourceSe
             market_sentiment: scored.explanation.slice(0, 3).join(' '),
             risk_factor: scored.riskFlags.join(', ') || null,
             ebay_sample_count: sampleCount,
+            fashion_rss_hits: fashionRssHit ? 1 : 0,
+            google_news_rss_hits: googleNewsHit ? 1 : 0,
             google_trend_hits: googleTrendHit ? 1 : 0,
             ai_corpus_hits: corpusHit ? 1 : 0,
             ebay_discovery_hits: discoveryHit ? 1 : 0,
@@ -2036,15 +2124,27 @@ async function syncMarketPulse() {
         .filter(Boolean);
 
       const corpusHeadlines = await fetchFashionCorpusHeadlines();
-      corpusAiTerms = await generateFashionCandidatesFromCorpusAI(
-        corpusHeadlines,
-        signalTerms
-      );
+      let corpusMode = 'ai';
+      let corpusErrorNote = null;
+      try {
+        corpusAiTerms = await generateFashionCandidatesFromCorpusAI(
+          corpusHeadlines,
+          signalTerms
+        );
+      } catch (aiErr) {
+        corpusMode = 'fallback';
+        corpusErrorNote = String(aiErr?.message || 'ai_generation_failed');
+        corpusAiTerms = generateFashionCandidatesFromCorpusFallback(corpusHeadlines);
+      }
 
       await finishCollectorJob(
         corpusJobId,
-        'success',
-        `Captured ${corpusHeadlines.length} headlines and generated ${corpusAiTerms.length} AI candidates.`
+        corpusMode === 'ai' ? 'success' : (corpusAiTerms.length > 0 ? 'success' : 'degraded'),
+        corpusMode === 'ai'
+          ? `Captured ${corpusHeadlines.length} headlines and generated ${corpusAiTerms.length} AI candidates.`
+          : corpusAiTerms.length > 0
+            ? `Captured ${corpusHeadlines.length} headlines and generated ${corpusAiTerms.length} fallback candidates (AI unavailable: ${corpusErrorNote}).`
+            : `Captured ${corpusHeadlines.length} headlines but AI failed and fallback yielded 0 candidates (${corpusErrorNote}).`
       );
     } catch (err) {
       corpusFailures += 1;
@@ -2265,6 +2365,8 @@ async function syncMarketPulse() {
               : 'Style Category',
           hook_brand: trendVerdict.brand || signal.hook_brand || null,
           ebay_sample_count: sampleCount,
+          fashion_rss_hits: fashionRssHit ? 1 : 0,
+          google_news_rss_hits: googleNewsHit ? 1 : 0,
           google_trend_hits: googleTrendHit ? 1 : 0,
           ai_corpus_hits: corpusHit ? 1 : 0,
           ebay_discovery_hits: discoveryHit ? 1 : 0,
@@ -2303,14 +2405,26 @@ async function syncMarketPulse() {
       }
     }
 
+    const totalSignals = Math.max(1, Number(signals.length || 0));
+    const ebaySampleHits = Math.max(0, totalSignals - ebayNoSampleCount);
+    const ebayFailureRate = ebayFailures / totalSignals;
+    const ebayStatus =
+      ebaySampleHits === 0
+        ? 'degraded'
+        : ebayFailureRate >= 0.35
+          ? 'degraded'
+          : 'success';
+    const ebayStatusMessage =
+      ebaySampleHits === 0
+        ? `No eBay sold-price samples detected for all ${signals.length} signals.`
+        : ebayFailureRate >= 0.35
+          ? `High eBay fetch failure rate: ${ebayFailures}/${signals.length} items failed fetch.`
+          : null;
+
     await finishCollectorJob(
       ebayJobId,
-      ebayFailures > 0 || ebayNoSampleCount === signals.length ? 'degraded' : 'success',
-      ebayFailures > 0
-        ? `${ebayFailures} item(s) failed eBay fetch.`
-        : ebayNoSampleCount === signals.length
-          ? `No eBay sold-price samples detected for all ${signals.length} signals.`
-          : null
+      ebayStatus,
+      ebayStatusMessage
     );
     console.log("🏁 Sync process finished successfully.");
 

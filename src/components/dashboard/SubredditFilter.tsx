@@ -21,10 +21,30 @@ type SignalRow = {
   updated_at: string | null;
   archived_at?: string | null;
   ebay_sample_count?: number | null;
+  fashion_rss_hits?: number | null;
+  google_news_rss_hits?: number | null;
   google_trend_hits?: number | null;
   ai_corpus_hits?: number | null;
   ebay_discovery_hits?: number | null;
   source_signal_count?: number | null;
+};
+
+type SourceStatusRow = {
+  source: string;
+  status: string;
+  healthy: boolean;
+  completedAt: string | null;
+  error: string | null;
+  capturedTerms: number | null;
+  activeSignalCount: number | null;
+  sampleVolume: number | null;
+  emptyRun: boolean;
+};
+
+type SourceMetricTile = {
+  label: string;
+  value: string;
+  muted?: boolean;
 };
 
 type CompCheckRow = {
@@ -33,6 +53,50 @@ type CompCheckRow = {
   checked_at: string | null;
   sample_size: number | null;
 };
+
+function normalizeJobStatus(status: string | null | undefined): string {
+  return String(status || "missing").toLowerCase();
+}
+
+function getSourceRunSummary(row: {
+  status: string;
+  completedAt?: string | null;
+  capturedTerms?: number | null;
+  emptyRun?: boolean;
+  error?: string | null;
+}): { label: string; tone: "emerald" | "amber" | "rose" | "blue" | "slate" } {
+  const normalized = normalizeJobStatus(row.status);
+  if (normalized === "running") {
+    return { label: "Collector is running now.", tone: "blue" };
+  }
+  if (normalized === "failed") {
+    return { label: "Collector failed. Check GitHub Actions logs, then rerun sync.", tone: "rose" };
+  }
+  if (normalized === "degraded") {
+    return { label: "Collector finished with warnings. Output may be partial.", tone: "amber" };
+  }
+  if (normalized === "success") {
+    if (row.emptyRun) {
+      return { label: "Run succeeded but accepted zero terms this cycle.", tone: "amber" };
+    }
+    if (typeof row.capturedTerms === "number" && row.capturedTerms > 0 && row.capturedTerms < 5) {
+      return { label: "Run succeeded with low output. Consider widening source tuning.", tone: "amber" };
+    }
+    return { label: "Collector run looks healthy.", tone: "emerald" };
+  }
+  if (normalized === "missing") {
+    return { label: "No collector run recorded yet.", tone: "slate" };
+  }
+  return { label: "Collector status needs review.", tone: "amber" };
+}
+
+function toneTextClass(tone: "emerald" | "amber" | "rose" | "blue" | "slate"): string {
+  if (tone === "emerald") return "text-emerald-600 dark:text-emerald-400";
+  if (tone === "amber") return "text-amber-600 dark:text-amber-300";
+  if (tone === "rose") return "text-rose-500";
+  if (tone === "blue") return "text-blue-500";
+  return "text-slate-500";
+}
 
 function normalizeTrendKey(value: string): string {
   return String(value || "")
@@ -45,6 +109,8 @@ function parseCapturedTermCount(message: string | null | undefined): number | nu
   const text = String(message || "");
   if (!text) return null;
   const patterns = [
+    /accepted=(\d+)/i,
+    /accepted:\s*(\d+)/i,
     /captured\s+(\d+)\s+google trends terms/i,
     /generated\s+(\d+)\s+eBay-derived candidate terms/i,
     /captured\s+(\d+)\s+terms\s+from/i,
@@ -56,6 +122,30 @@ function parseCapturedTermCount(message: string | null | undefined): number | nu
     if (match?.[1]) return Number(match[1]);
   }
   return null;
+}
+
+function metricValue(value: number | null, options?: { notTracked?: boolean }): { text: string; muted: boolean } {
+  if (options?.notTracked) return { text: "Not Tracked", muted: true };
+  if (typeof value === "number" && Number.isFinite(value)) return { text: Number(value).toLocaleString(), muted: false };
+  return { text: "No Run Data", muted: true };
+}
+
+function getSourceMetricTiles(row: SourceStatusRow): SourceMetricTile[] {
+  if (row.source === "ebay") {
+    const captured = metricValue(null, { notTracked: true });
+    const samples = metricValue(row.sampleVolume ?? 0);
+    return [
+      { label: "Captured Terms", value: captured.text, muted: captured.muted },
+      { label: "Comp Samples", value: samples.text, muted: samples.muted },
+    ];
+  }
+
+  const captured = metricValue(row.capturedTerms);
+  const activeSignals = metricValue(row.activeSignalCount);
+  return [
+    { label: "Captured Terms", value: captured.text, muted: captured.muted },
+    { label: "Active Signals", value: activeSignals.text, muted: activeSignals.muted },
+  ];
 }
 
 export default function SubredditFilter() {
@@ -76,7 +166,7 @@ export default function SubredditFilter() {
         .limit(100),
       supabase
         .from("market_signals")
-        .select("id,trend_name,hook_brand,mention_count,confidence_score,heat_score,updated_at,archived_at,ebay_sample_count,google_trend_hits,ai_corpus_hits,ebay_discovery_hits,source_signal_count")
+        .select("id,trend_name,hook_brand,mention_count,confidence_score,heat_score,updated_at,archived_at,ebay_sample_count,fashion_rss_hits,google_news_rss_hits,google_trend_hits,ai_corpus_hits,ebay_discovery_hits,source_signal_count")
         .order("updated_at", { ascending: false })
         .limit(1000),
       supabase
@@ -130,17 +220,23 @@ export default function SubredditFilter() {
     const support = {
       ebaySignals: 0,
       ebaySamples: 0,
+      fashionRssSignals: 0,
+      googleNewsSignals: 0,
       googleSignals: 0,
       aiSignals: 0,
       discoverySignals: 0,
     };
     for (const s of activeSignals) {
       const ebaySamples = Number(s.ebay_sample_count || 0);
+      const fashionRssHits = Number(s.fashion_rss_hits || 0);
+      const googleNewsHits = Number(s.google_news_rss_hits || 0);
       const googleHits = Number(s.google_trend_hits || 0);
       const aiHits = Number(s.ai_corpus_hits || 0);
       const discoveryHits = Number(s.ebay_discovery_hits || 0);
       if (ebaySamples > 0) support.ebaySignals += 1;
       support.ebaySamples += Math.max(0, ebaySamples);
+      if (fashionRssHits > 0) support.fashionRssSignals += 1;
+      if (googleNewsHits > 0) support.googleNewsSignals += 1;
       if (googleHits > 0) support.googleSignals += 1;
       if (aiHits > 0) support.aiSignals += 1;
       if (discoveryHits > 0) support.discoverySignals += 1;
@@ -160,15 +256,19 @@ export default function SubredditFilter() {
       const healthy = status === "success";
       const capturedTerms = parseCapturedTermCount(run?.error_message || "");
       const activeSignalCount =
-        source === "google_trends"
-          ? support.googleSignals
-          : source === "ebay_discovery"
-            ? support.discoverySignals
-            : source === "fashion_corpus_ai"
-              ? support.aiSignals
-              : source === "ebay"
-                ? support.ebaySignals
-                : null;
+        source === "fashion_rss"
+          ? support.fashionRssSignals
+          : source === "google_news_rss"
+            ? support.googleNewsSignals
+            : source === "google_trends"
+              ? support.googleSignals
+              : source === "ebay_discovery"
+                ? support.discoverySignals
+                : source === "fashion_corpus_ai"
+                  ? support.aiSignals
+                  : source === "ebay"
+                    ? support.ebaySignals
+                    : null;
       const sampleVolume = source === "ebay" ? support.ebaySamples : null;
       const emptyRunSources = new Set(["google_trends", "ebay_discovery", "fashion_rss", "google_news_rss"]);
       return {
@@ -181,7 +281,7 @@ export default function SubredditFilter() {
         activeSignalCount,
         sampleVolume,
         emptyRun: emptyRunSources.has(source) && capturedTerms === 0,
-      };
+      } as SourceStatusRow;
     });
   }, [latestBySource, signals]);
 
@@ -225,19 +325,19 @@ export default function SubredditFilter() {
   const highestPriorityAction = useMemo(() => {
     const failed = sourceRows.find((s) => s.status === "failed" || s.status === "degraded");
     if (failed) {
-      return `Fix ${failed.source} collector: ${failed.error || "check workflow logs."}`;
+      return `Review ${failed.source} in GitHub Actions logs, adjust secrets/limits if needed, then rerun the sync workflow.`;
     }
     const emptyRun = sourceRows.find((s) => s.emptyRun);
     if (emptyRun) {
-      return `${emptyRun.source} returned zero accepted terms on the latest run. Re-run sync after updating source tuning secrets.`;
+      return `${emptyRun.source} returned zero accepted terms. Loosen source tuning secrets, then rerun sync to restore candidate flow.`;
     }
     if (metrics.compCoveragePct < 40) {
-      return "Run another sync cycle to expand comp coverage for more reliable pricing.";
+      return "Comp coverage is low. Run another sync cycle and prioritize eBay comp collection for stronger pricing confidence.";
     }
     if (metrics.branded < 10) {
-      return "Improve brand tagging coverage so Research Brand Nodes stay populated.";
+      return "Brand tagging coverage is thin. Run sync again and review classifier settings so Decision Lab brand nodes stay populated.";
     }
-    return "Pipeline looks healthy. Focus on reviewing top Buy-rated nodes in Research.";
+    return "Pipeline looks healthy. Review top Buy-rated nodes in Radar and promote the best ones into Decision Lab.";
   }, [sourceRows, metrics]);
 
   if (loading) {
@@ -294,6 +394,11 @@ export default function SubredditFilter() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {sourceRows.map((row) => (
             <div key={row.source} className="p-6 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+              {(() => {
+                const summary = getSourceRunSummary(row);
+                const metricTiles = getSourceMetricTiles(row);
+                return (
+                  <>
               <div className="flex items-center justify-between mb-3">
                 <p className="text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white">
                   {row.source.replace(/_/g, " ")}
@@ -306,34 +411,49 @@ export default function SubredditFilter() {
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
                 {row.completedAt ? new Date(row.completedAt).toLocaleString() : "No run recorded"}
               </p>
+              <p className={`mt-2 text-[10px] font-black uppercase tracking-widest ${toneTextClass(summary.tone)}`}>
+                {summary.label}
+              </p>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Captured Terms</p>
-                  <p className="text-sm font-black text-slate-700 dark:text-slate-200">
-                    {row.capturedTerms === null ? "—" : row.capturedTerms}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">
-                    {row.source === "ebay" ? "Comp Samples" : "Active Signals"}
-                  </p>
-                  <p className="text-sm font-black text-slate-700 dark:text-slate-200">
-                    {row.source === "ebay"
-                      ? Number(row.sampleVolume || 0).toLocaleString()
-                      : row.activeSignalCount === null
-                        ? "—"
-                        : Number(row.activeSignalCount || 0).toLocaleString()}
-                  </p>
-                </div>
+                {metricTiles.map((tile) => (
+                  <div
+                    key={`${row.source}-${tile.label}`}
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2"
+                  >
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">{tile.label}</p>
+                    <p
+                      className={
+                        tile.muted
+                          ? "text-[11px] font-black uppercase tracking-widest text-slate-400"
+                          : "text-sm font-black text-slate-700 dark:text-slate-200"
+                      }
+                    >
+                      {tile.value}
+                    </p>
+                  </div>
+                ))}
               </div>
               {row.emptyRun && (
                 <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-amber-600">
-                  Empty run: no accepted terms this cycle.
+                  Empty run: no accepted terms this cycle. Widen source tuning and rerun.
                 </p>
               )}
               {row.error && (
-                <p className="mt-3 text-xs font-bold text-rose-500 line-clamp-2">{row.error}</p>
+                <p
+                  className={`mt-3 text-xs font-bold line-clamp-2 ${
+                    row.status === "failed"
+                      ? "text-rose-500"
+                      : row.status === "degraded"
+                        ? "text-amber-600 dark:text-amber-300"
+                        : "text-slate-500 dark:text-slate-400"
+                  }`}
+                >
+                  {row.error}
+                </p>
               )}
+                  </>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -380,8 +500,10 @@ function StatusPill({ status }: { status: string }) {
   const classes =
     normalized === "success"
       ? "bg-emerald-500/10 text-emerald-500"
-      : normalized === "degraded" || normalized === "failed"
-        ? "bg-rose-500/10 text-rose-500"
+      : normalized === "degraded"
+        ? "bg-amber-500/10 text-amber-500"
+        : normalized === "failed"
+          ? "bg-rose-500/10 text-rose-500"
         : normalized === "running"
           ? "bg-blue-500/10 text-blue-500"
           : "bg-amber-500/10 text-amber-500";

@@ -17,6 +17,17 @@ import {
 } from "lucide-react";
 
 const GOOGLE_MAPS_EMBED_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY || "";
+const GOOGLE_MAPS_JS_KEY =
+  process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_JS_KEY || "";
+const GOOGLE_MAPS_SCRIPT_ID = "thriftpulse-google-maps-js";
+const STORE_MAP_SCOPE_STORAGE_KEY = "thriftpulse.storeMap.scope";
+
+declare global {
+  interface Window {
+    google?: any;
+    __thriftpulseGoogleMapsLoader?: Promise<void>;
+  }
+}
 
 type StoreNode = {
   id: string;
@@ -27,14 +38,60 @@ type StoreNode = {
   rating?: number | null;
   review_count?: number | null;
   census_income?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  source?: string;
   type: string;
   best_time: string;
   matches: string[];
   coords: { top: string; left: string };
 };
 
+type MapScope = "neighborhood" | "city" | "metro";
+
+function isMapScope(value: unknown): value is MapScope {
+  return value === "neighborhood" || value === "city" || value === "metro";
+}
+
+function loadGoogleMapsJs(apiKey: string): Promise<void> {
+  if (!apiKey) return Promise.reject(new Error("missing_google_maps_key"));
+  if (typeof window === "undefined") return Promise.reject(new Error("no_window"));
+  if (window.google?.maps) return Promise.resolve();
+  if (window.__thriftpulseGoogleMapsLoader) return window.__thriftpulseGoogleMapsLoader;
+
+  window.__thriftpulseGoogleMapsLoader = new Promise<void>((resolve, reject) => {
+    const existing = document.getElementById(GOOGLE_MAPS_SCRIPT_ID) as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("google_maps_script_failed")), { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = GOOGLE_MAPS_SCRIPT_ID;
+    script.async = true;
+    script.defer = true;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("google_maps_script_failed"));
+    document.head.appendChild(script);
+  }).catch((err) => {
+    window.__thriftpulseGoogleMapsLoader = undefined;
+    throw err;
+  });
+
+  return window.__thriftpulseGoogleMapsLoader;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseOptionalNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function parseRank(value: unknown, fallback: number): number {
@@ -74,12 +131,193 @@ function normalizeStoreRows(stores: any[]): StoreNode[] {
       address: String(store?.address || "Address unavailable"),
       zip_code: store?.zip_code ? String(store.zip_code) : undefined,
       power_rank: parseRank(store?.power_rank, fallbackRank),
+      rating: parseOptionalNumber(store?.rating),
+      review_count: parseOptionalNumber(store?.review_count),
+      census_income: parseOptionalNumber(store?.census_income),
+      lat: parseOptionalNumber(
+        store?.lat ??
+          store?.latitude ??
+          store?.coords?.lat ??
+          store?.location?.lat
+      ),
+      lng: parseOptionalNumber(
+        store?.lng ??
+          store?.lon ??
+          store?.longitude ??
+          store?.coords?.lng ??
+          store?.coords?.lon ??
+          store?.location?.lng ??
+          store?.location?.lon
+      ),
+      source: store?.source ? String(store.source) : undefined,
       type: String(store?.type || "Thrift Store"),
       best_time: String(store?.best_time || "Weekday mornings"),
       matches: baseMatches,
       coords,
     };
   });
+}
+
+function hasGeoPoint(store: Pick<StoreNode, "lat" | "lng">): boolean {
+  if (store.lat === null || store.lat === undefined || store.lng === null || store.lng === undefined) {
+    return false;
+  }
+  const lat = Number(store.lat);
+  const lng = Number(store.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  // Guard against null-coerce bugs rendering a false coordinate in the Atlantic.
+  if (Math.abs(lat) < 0.000001 && Math.abs(lng) < 0.000001) return false;
+  return true;
+}
+
+function normalizeSearchKey(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\w\s,]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s*,\s*/g, ",")
+    .trim();
+}
+
+function buildGeocodeQuery(store: StoreNode, currentLocation: string): string {
+  const base = [store.name, store.address].filter(Boolean).join(", ");
+  if (!base) return currentLocation || "";
+  if (!currentLocation) return base;
+  return `${base}, ${currentLocation}`;
+}
+
+function projectStoresToCoords(stores: StoreNode[]): Record<string, { top: string; left: string }> {
+  if (!stores.length) return {};
+
+  const geoStores = stores.filter(hasGeoPoint);
+  if (!geoStores.length) {
+    return Object.fromEntries(
+      stores.map((store, index) => [store.id, store.coords || generateFallbackCoords(index)])
+    );
+  }
+
+  const lats = geoStores.map((s) => Number(s.lat));
+  const lngs = geoStores.map((s) => Number(s.lng));
+  let minLat = Math.min(...lats);
+  let maxLat = Math.max(...lats);
+  let minLng = Math.min(...lngs);
+  let maxLng = Math.max(...lngs);
+
+  if (maxLat - minLat < 0.02) {
+    minLat -= 0.01;
+    maxLat += 0.01;
+  } else {
+    const pad = (maxLat - minLat) * 0.12;
+    minLat -= pad;
+    maxLat += pad;
+  }
+
+  if (maxLng - minLng < 0.02) {
+    minLng -= 0.01;
+    maxLng += 0.01;
+  } else {
+    const pad = (maxLng - minLng) * 0.12;
+    minLng -= pad;
+    maxLng += pad;
+  }
+
+  const coordMap: Record<string, { top: string; left: string }> = {};
+
+  stores.forEach((store, index) => {
+    if (!hasGeoPoint(store)) {
+      coordMap[store.id] = store.coords || generateFallbackCoords(index);
+      return;
+    }
+
+    const lat = Number(store.lat);
+    const lng = Number(store.lng);
+    const x = (lng - minLng) / Math.max(maxLng - minLng, 0.0001);
+    const y = (maxLat - lat) / Math.max(maxLat - minLat, 0.0001);
+
+    const jitterX = ((index % 3) - 1) * 0.8;
+    const jitterY = ((Math.floor(index / 3) % 3) - 1) * 0.8;
+
+    const left = clamp(8 + x * 84 + jitterX, 6, 94);
+    const top = clamp(16 + y * 68 + jitterY, 12, 90);
+
+    coordMap[store.id] = { top: `${top}%`, left: `${left}%` };
+  });
+
+  return coordMap;
+}
+
+function deriveMapCenter(stores: StoreNode[], selectedStore: StoreNode | null): { lat: number; lng: number } | null {
+  if (selectedStore && hasGeoPoint(selectedStore)) {
+    return { lat: Number(selectedStore.lat), lng: Number(selectedStore.lng) };
+  }
+
+  const geoStores = stores.filter(hasGeoPoint);
+  if (!geoStores.length) return null;
+  const lat = geoStores.reduce((sum, s) => sum + Number(s.lat), 0) / geoStores.length;
+  const lng = geoStores.reduce((sum, s) => sum + Number(s.lng), 0) / geoStores.length;
+  return { lat, lng };
+}
+
+function getGeoBounds(stores: StoreNode[]): { latSpan: number; lngSpan: number } | null {
+  const geoStores = stores.filter(hasGeoPoint);
+  if (!geoStores.length) return null;
+  const lats = geoStores.map((s) => Number(s.lat));
+  const lngs = geoStores.map((s) => Number(s.lng));
+  return {
+    latSpan: Math.max(...lats) - Math.min(...lats),
+    lngSpan: Math.max(...lngs) - Math.min(...lngs),
+  };
+}
+
+function getMapScopeConfig(scope: MapScope): {
+  fitLatSpanMax: number;
+  fitLngSpanMax: number;
+  minZoomAfterFit: number;
+  nonSelectedZoomMin: number;
+  nonSelectedZoomMax: number;
+  cityZoom: number;
+  zipZoom: number;
+} {
+  if (scope === "neighborhood") {
+    return {
+      fitLatSpanMax: 0.22,
+      fitLngSpanMax: 0.32,
+      minZoomAfterFit: 13,
+      nonSelectedZoomMin: 13,
+      nonSelectedZoomMax: 15,
+      cityZoom: 13,
+      zipZoom: 14,
+    };
+  }
+  if (scope === "metro") {
+    return {
+      fitLatSpanMax: 0.75,
+      fitLngSpanMax: 1.05,
+      minZoomAfterFit: 11,
+      nonSelectedZoomMin: 10,
+      nonSelectedZoomMax: 12,
+      cityZoom: 11,
+      zipZoom: 12,
+    };
+  }
+  return {
+    fitLatSpanMax: 0.45,
+    fitLngSpanMax: 0.65,
+    minZoomAfterFit: 12,
+    nonSelectedZoomMin: 12,
+    nonSelectedZoomMax: 14,
+    cityZoom: 12,
+    zipZoom: 13,
+  };
+}
+
+function inferDefaultSearchZoom(query: string, scope: MapScope): number {
+  const cfg = getMapScopeConfig(scope);
+  const q = String(query || "").trim();
+  if (!q) return cfg.cityZoom;
+  if (/^\d{5}(?:-\d{4})?$/.test(q)) return cfg.zipZoom;
+  if (/,\s*[A-Za-z]{2}\b/.test(q)) return cfg.cityZoom;
+  return cfg.cityZoom;
 }
 
 function fallbackStores(): StoreNode[] {
@@ -152,9 +390,12 @@ function mapApiResultsToStores(results: any[]): StoreNode[] {
     name: String(row.name || row.formatted_address?.split(",")[0] || row.address?.split(",")[0] || `Store ${idx + 1}`),
     address: String(row.address || row.formatted_address || "Address unavailable"),
     power_rank: computePowerRank(row, idx),
-    rating: Number.isFinite(Number(row?.rating)) ? Number(row.rating) : null,
-    review_count: Number.isFinite(Number(row?.review_count)) ? Number(row.review_count) : null,
-    census_income: Number.isFinite(Number(row?.census_income)) ? Number(row.census_income) : null,
+    rating: parseOptionalNumber(row?.rating),
+    review_count: parseOptionalNumber(row?.review_count),
+    census_income: parseOptionalNumber(row?.census_income),
+    lat: parseOptionalNumber(row?.lat),
+    lng: parseOptionalNumber(row?.lng),
+    source: row?.source ? String(row.source) : undefined,
     type: row.source === "osm" ? "OpenStreetMap" : "Google Places",
     best_time: "Weekday mornings",
     matches: ["Jackets", "Denim", "Footwear"],
@@ -173,10 +414,23 @@ export default function SectionHunt({
   const [selectedStore, setSelectedStore] = useState<StoreNode | null>(null);
   const [showTopOnly, setShowTopOnly] = useState(false);
   const [detectedStores, setDetectedStores] = useState<StoreNode[]>([]);
-  const [mapZoom, setMapZoom] = useState(11);
+  const [mapScope, setMapScope] = useState<MapScope>("city");
+  const [mapZoom, setMapZoom] = useState(12);
   const [searching, setSearching] = useState(false);
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
+  const [mapMode, setMapMode] = useState<"loading" | "js" | "embed">(
+    GOOGLE_MAPS_JS_KEY ? "loading" : "embed"
+  );
+  const [mapNotice, setMapNotice] = useState<string | null>(null);
+  const [geoOverrides, setGeoOverrides] = useState<Record<string, { lat: number; lng: number }>>({});
   const searchCacheRef = useRef<Record<string, StoreNode[]>>({});
+  const latestSearchRequestRef = useRef(0);
+  const mapCanvasRef = useRef<HTMLDivElement | null>(null);
+  const googleMapRef = useRef<any>(null);
+  const googleMarkersRef = useRef<any[]>([]);
+  const selectedMarkerRef = useRef<any>(null);
+  const lastAutoFitKeyRef = useRef<string>("");
+  const geocodeAttemptCacheRef = useRef<Map<string, { lat: number; lng: number } | null>>(new Map());
 
   const normalizedStoreData = useMemo(() => {
     const normalized = normalizeStoreRows(stores);
@@ -184,16 +438,129 @@ export default function SectionHunt({
   }, [stores]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const savedScope = window.localStorage.getItem(STORE_MAP_SCOPE_STORAGE_KEY);
+      if (isMapScope(savedScope)) {
+        setMapScope(savedScope);
+      }
+    } catch {
+      // localStorage can fail in privacy modes; keep default.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(STORE_MAP_SCOPE_STORAGE_KEY, mapScope);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [mapScope]);
+
+  useEffect(() => {
     setDetectedStores(normalizedStoreData);
   }, [normalizedStoreData]);
 
+  useEffect(() => {
+    setMapZoom(inferDefaultSearchZoom(currentLocation, mapScope));
+  }, [mapScope, currentLocation]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!GOOGLE_MAPS_JS_KEY) {
+      setMapMode("embed");
+      setMapNotice(null);
+      return;
+    }
+
+    setMapMode("loading");
+    loadGoogleMapsJs(GOOGLE_MAPS_JS_KEY)
+      .then(() => {
+        if (cancelled) return;
+        setMapMode("js");
+        setMapNotice(null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMapMode("embed");
+        setMapNotice("Interactive Google map unavailable. Using embed mode.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (mapMode !== "js" || typeof window === "undefined" || !window.google?.maps?.Geocoder) {
+      return;
+    }
+
+    const missing = detectedStores.filter((store) => !hasGeoPoint(store) && !geoOverrides[store.id]);
+    if (!missing.length) return;
+
+    const geocoder = new window.google.maps.Geocoder();
+
+    const run = async () => {
+      for (const store of missing.slice(0, 8)) {
+        if (cancelled) return;
+        const query = buildGeocodeQuery(store, currentLocation);
+        const cacheKey = normalizeSearchKey(query);
+        const cached = geocodeAttemptCacheRef.current.get(cacheKey);
+        if (cached) {
+          setGeoOverrides((prev) => (prev[store.id] ? prev : { ...prev, [store.id]: cached }));
+          continue;
+        }
+        if (geocodeAttemptCacheRef.current.has(cacheKey) && cached === null) {
+          continue;
+        }
+
+        try {
+          // Geocoder callback API wrapped in a promise for sequential control.
+          const result = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+            geocoder.geocode({ address: query }, (results: any[], status: string) => {
+              if (status !== "OK" || !Array.isArray(results) || !results[0]?.geometry?.location) {
+                resolve(null);
+                return;
+              }
+              const loc = results[0].geometry.location;
+              const lat = typeof loc.lat === "function" ? Number(loc.lat()) : Number(loc.lat);
+              const lng = typeof loc.lng === "function" ? Number(loc.lng()) : Number(loc.lng);
+              if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                resolve(null);
+                return;
+              }
+              resolve({ lat, lng });
+            });
+          });
+
+          if (cancelled) return;
+          geocodeAttemptCacheRef.current.set(cacheKey, result);
+          if (result) {
+            setGeoOverrides((prev) => ({ ...prev, [store.id]: result }));
+          }
+        } catch {
+          geocodeAttemptCacheRef.current.set(cacheKey, null);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [mapMode, detectedStores, geoOverrides, currentLocation]);
+
   const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
     void (async () => {
-      e.preventDefault();
       const q = searchInput.trim();
       if (!q) {
         setDetectedStores(normalizedStoreData);
         setSearchNotice(null);
+        setMapZoom(inferDefaultSearchZoom(initialLocation || "30064", mapScope));
         return;
       }
 
@@ -201,7 +568,8 @@ export default function SectionHunt({
       setSelectedStore(null);
       setSearching(true);
       setSearchNotice(null);
-      const normalizedQuery = q.toLowerCase();
+      const normalizedQuery = normalizeSearchKey(q);
+      const requestId = ++latestSearchRequestRef.current;
 
       try {
         const placesRes = await fetch(
@@ -215,7 +583,8 @@ export default function SectionHunt({
           const mappedResults = mapApiResultsToStores(placesData?.results || []);
           if (mappedResults.length > 0) {
             const cached = searchCacheRef.current[normalizedQuery] || [];
-            const shouldMergeCache = cached.length > 0 && mappedResults.length < 4;
+            const shouldMergeCache =
+              cached.length > 0 && mappedResults.length > 0 && mappedResults.length < Math.min(6, cached.length);
             const mergedResults = shouldMergeCache
               ? [...mappedResults, ...cached].filter(
                   (row, idx, arr) =>
@@ -223,8 +592,10 @@ export default function SectionHunt({
                 )
               : mappedResults;
 
+            if (requestId !== latestSearchRequestRef.current) return;
             searchCacheRef.current[normalizedQuery] = mergedResults;
             setDetectedStores(mergedResults);
+            setMapZoom(inferDefaultSearchZoom(q, mapScope));
             const sourceLabel =
               placesData?.source === "osm"
                 ? "OpenStreetMap"
@@ -234,9 +605,17 @@ export default function SectionHunt({
                   ? "Google Places"
                   : "live map";
             setSearchNotice(`Loaded ${mergedResults.length} ${sourceLabel} result(s).`);
-            setSearching(false);
             return;
           }
+        }
+
+        const cached = searchCacheRef.current[normalizedQuery] || [];
+        if (cached.length > 0) {
+          if (requestId !== latestSearchRequestRef.current) return;
+          setDetectedStores(cached);
+          setMapZoom(inferDefaultSearchZoom(q, mapScope));
+          setSearchNotice(`Using ${cached.length} cached map result(s) for ${q}.`);
+          return;
         }
 
         const localFiltered = normalizedStoreData.filter((store) => {
@@ -244,26 +623,42 @@ export default function SectionHunt({
           return haystack.includes(q.toLowerCase());
         });
         if (localFiltered.length > 0) {
+          if (requestId !== latestSearchRequestRef.current) return;
           setDetectedStores(localFiltered);
+          setMapZoom(inferDefaultSearchZoom(q, mapScope));
           setSearchNotice(`Loaded ${localFiltered.length} local store node(s).`);
-          setSearching(false);
           return;
         }
 
+        if (requestId !== latestSearchRequestRef.current) return;
         setDetectedStores(normalizedStoreData);
+        setMapZoom(inferDefaultSearchZoom(q, mapScope));
         setSearchNotice("No live stores found for that search. Showing your saved store nodes.");
       } catch {
+        if (requestId !== latestSearchRequestRef.current) return;
         setDetectedStores(normalizedStoreData);
+        setMapZoom(inferDefaultSearchZoom(q, mapScope));
         setSearchNotice("Live map search failed. Showing your saved store nodes.");
       } finally {
-        setSearching(false);
+        if (requestId === latestSearchRequestRef.current) {
+          setSearching(false);
+        }
       }
     })();
   };
 
+  const detectedStoresWithGeo = useMemo(
+    () =>
+      detectedStores.map((store) => {
+        const override = geoOverrides[store.id];
+        return override ? { ...store, lat: override.lat, lng: override.lng } : store;
+      }),
+    [detectedStores, geoOverrides]
+  );
+
   const sortedStores = useMemo(
-    () => [...detectedStores].sort((a, b) => (b.power_rank || 0) - (a.power_rank || 0)),
-    [detectedStores]
+    () => [...detectedStoresWithGeo].sort((a, b) => (b.power_rank || 0) - (a.power_rank || 0)),
+    [detectedStoresWithGeo]
   );
 
   const visibleStores = showTopOnly ? sortedStores.slice(0, 3) : sortedStores;
@@ -276,13 +671,146 @@ export default function SectionHunt({
     return trunk.slice(0, 3);
   }, [selectedStore, trunk]);
 
-  const mapSrc = GOOGLE_MAPS_EMBED_KEY
-    ? `https://www.google.com/maps/embed/v1/search?key=${GOOGLE_MAPS_EMBED_KEY}&q=${encodeURIComponent(
-        `thrift stores in ${currentLocation}`
-      )}&zoom=${mapZoom}`
-    : `https://www.google.com/maps?q=${encodeURIComponent(
-        `thrift stores in ${currentLocation}`
-      )}&output=embed&z=${mapZoom}`;
+  const pinCoordsById = useMemo(() => projectStoresToCoords(visibleStores), [visibleStores]);
+  const mapCenter = useMemo(() => deriveMapCenter(visibleStores, selectedStore), [visibleStores, selectedStore]);
+  const geoBounds = useMemo(() => getGeoBounds(visibleStores), [visibleStores]);
+  const mapScopeConfig = useMemo(() => getMapScopeConfig(mapScope), [mapScope]);
+  const hasVisibleGeoStores = useMemo(() => visibleStores.some(hasGeoPoint), [visibleStores]);
+  const useInteractiveMap = mapMode === "js" && hasVisibleGeoStores;
+
+  useEffect(() => {
+    if (!useInteractiveMap || !mapCanvasRef.current || typeof window === "undefined" || !window.google?.maps) {
+      return;
+    }
+
+    const gmaps = window.google.maps;
+
+    if (!googleMapRef.current) {
+      googleMapRef.current = new gmaps.Map(mapCanvasRef.current, {
+        center: mapCenter || { lat: 34.0522, lng: -118.2437 },
+        zoom: mapZoom,
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: true,
+        zoomControl: false,
+        clickableIcons: false,
+      });
+      // Google Maps can render blank/blue if initialized while layout is still settling.
+      window.setTimeout(() => {
+        try {
+          gmaps.event.trigger(googleMapRef.current, "resize");
+          if (mapCenter && typeof googleMapRef.current?.setCenter === "function") {
+            googleMapRef.current.setCenter(mapCenter);
+          }
+        } catch {
+          // no-op
+        }
+      }, 80);
+    }
+
+    const map = googleMapRef.current;
+    if (typeof map?.setZoom === "function") {
+      map.setZoom(mapZoom);
+    }
+    if (mapCenter && typeof map?.setCenter === "function") {
+      map.setCenter(mapCenter);
+    }
+
+    googleMarkersRef.current.forEach((marker) => {
+      if (typeof marker?.setMap === "function") marker.setMap(null);
+    });
+    googleMarkersRef.current = [];
+    selectedMarkerRef.current = null;
+
+    const bounds = new gmaps.LatLngBounds();
+    let markerCount = 0;
+
+    visibleStores.forEach((store) => {
+      if (!hasGeoPoint(store)) return;
+      const position = { lat: Number(store.lat), lng: Number(store.lng) };
+      markerCount += 1;
+      if (typeof bounds.extend === "function") bounds.extend(position);
+
+      const isSelected = selectedStore?.id === store.id;
+      const marker = new gmaps.Marker({
+        map,
+        position,
+        title: `${store.name} (${store.power_rank} PWR)`,
+        icon: {
+          path: gmaps.SymbolPath.CIRCLE,
+          fillColor: isSelected ? "#0f172a" : "#10b981",
+          fillOpacity: 0.95,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+          scale: isSelected ? 10 : 8,
+        },
+      });
+
+      marker.addListener("click", () => {
+        setSelectedStore(store);
+      });
+
+      googleMarkersRef.current.push(marker);
+      if (isSelected) {
+        selectedMarkerRef.current = marker;
+      }
+    });
+
+    const visibleIdsKey = `${currentLocation}|${visibleStores.map((s) => s.id).join("|")}`;
+    const shouldAutoFit =
+      !!geoBounds &&
+      geoBounds.latSpan <= mapScopeConfig.fitLatSpanMax &&
+      geoBounds.lngSpan <= mapScopeConfig.fitLngSpanMax;
+    if (selectedStore && hasGeoPoint(selectedStore)) {
+      if (typeof map?.panTo === "function") {
+        map.panTo({ lat: Number(selectedStore.lat), lng: Number(selectedStore.lng) });
+      }
+      if (typeof map?.getZoom === "function" && typeof map?.setZoom === "function") {
+        const currentZoom = Number(map.getZoom?.() ?? mapZoom);
+        if (Number.isFinite(currentZoom) && currentZoom < Math.max(12, mapZoom)) {
+          map.setZoom(Math.max(12, mapZoom));
+        }
+      }
+    } else if (markerCount > 1 && shouldAutoFit && typeof map?.fitBounds === "function") {
+      if (lastAutoFitKeyRef.current !== visibleIdsKey) {
+        map.fitBounds(bounds, 80);
+        // Prevent over-zoom after fit when stores are tightly grouped.
+        window.setTimeout(() => {
+          try {
+            if (typeof map?.getZoom === "function" && typeof map?.setZoom === "function") {
+              const z = Number(map.getZoom());
+              if (Number.isFinite(z) && z > 14) {
+                map.setZoom(14);
+              }
+              if (Number.isFinite(z) && z < Math.max(mapScopeConfig.minZoomAfterFit, mapZoom)) {
+                map.setZoom(Math.max(mapScopeConfig.minZoomAfterFit, mapZoom));
+              }
+            }
+          } catch {
+            // no-op
+          }
+        }, 50);
+        lastAutoFitKeyRef.current = visibleIdsKey;
+      }
+    } else if (markerCount >= 1 && mapCenter && typeof map?.setCenter === "function") {
+      map.setCenter(mapCenter);
+      if (!selectedStore && typeof map?.setZoom === "function") {
+        map.setZoom(clamp(mapZoom, mapScopeConfig.nonSelectedZoomMin, mapScopeConfig.nonSelectedZoomMax));
+      }
+    }
+  }, [useInteractiveMap, visibleStores, selectedStore, mapCenter, mapZoom, currentLocation, geoBounds, mapScopeConfig]);
+
+  const mapSrc = mapCenter
+    ? GOOGLE_MAPS_EMBED_KEY
+      ? `https://www.google.com/maps/embed/v1/view?key=${GOOGLE_MAPS_EMBED_KEY}&center=${mapCenter.lat},${mapCenter.lng}&zoom=${mapZoom}&maptype=roadmap`
+      : `https://www.google.com/maps?q=${encodeURIComponent(`${mapCenter.lat},${mapCenter.lng}`)}&output=embed&z=${mapZoom}`
+    : GOOGLE_MAPS_EMBED_KEY
+      ? `https://www.google.com/maps/embed/v1/search?key=${GOOGLE_MAPS_EMBED_KEY}&q=${encodeURIComponent(
+          `thrift stores in ${currentLocation}`
+        )}&zoom=${mapZoom}`
+      : `https://www.google.com/maps?q=${encodeURIComponent(
+          `thrift stores in ${currentLocation}`
+        )}&output=embed&z=${mapZoom}`;
 
   return (
     <div className="space-y-8 text-left animate-in fade-in duration-700 h-full flex flex-col">
@@ -442,16 +970,24 @@ export default function SectionHunt({
 
         <div className="lg:col-span-2 bg-slate-100 dark:bg-slate-800 rounded-[3rem] border-4 border-white dark:border-slate-900 shadow-inner relative overflow-hidden group">
           <div className="absolute inset-0 z-0">
-            <iframe
-              title="Store map"
-              width="100%"
-              height="100%"
-              loading="lazy"
-              allowFullScreen
-              className="grayscale contrast-125 opacity-70 hover:opacity-100 transition-opacity duration-700 pointer-events-none"
-              style={{ border: 0 }}
-              src={mapSrc}
-            />
+            {useInteractiveMap ? (
+              <div
+                ref={mapCanvasRef}
+                className="h-full w-full contrast-110 opacity-90 hover:opacity-100 transition-opacity duration-700"
+                aria-label="Interactive store map"
+              />
+            ) : (
+              <iframe
+                title="Store map"
+                width="100%"
+                height="100%"
+                loading="lazy"
+                allowFullScreen
+                className="grayscale contrast-125 opacity-75 hover:opacity-100 transition-opacity duration-700"
+                style={{ border: 0 }}
+                src={mapSrc}
+              />
+            )}
             <div className="absolute inset-0 pointer-events-none z-10">
               <div className="absolute top-[30%] left-[40%] h-64 w-64 bg-emerald-500/10 rounded-full blur-3xl animate-pulse" />
               <div className="absolute top-[60%] left-[70%] h-48 w-48 bg-blue-500/10 rounded-full blur-3xl animate-pulse delay-700" />
@@ -475,9 +1011,43 @@ export default function SectionHunt({
                 {searching ? "Scanning..." : "Scan"}
               </button>
             </form>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="px-2 py-1 rounded-lg bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                Scope
+              </span>
+              {([
+                { id: "neighborhood", label: "Neighborhood" },
+                { id: "city", label: "City" },
+                { id: "metro", label: "Metro" },
+              ] as const).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setMapScope(option.id)}
+                  className={`px-3 py-1.5 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-colors ${
+                    mapScope === option.id
+                      ? "bg-emerald-500 text-slate-900 border-emerald-500"
+                      : "bg-white/90 dark:bg-slate-900/90 text-slate-500 border-slate-200 dark:border-slate-700 hover:border-emerald-400"
+                  }`}
+                  title={`Set default search zoom to ${option.label.toLowerCase()} view`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             {searchNotice && (
               <p className="mt-2 px-3 py-2 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-wide text-slate-500">
                 {searchNotice}
+              </p>
+            )}
+            {mapMode === "loading" && (
+              <p className="mt-2 px-3 py-2 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                Loading interactive map...
+              </p>
+            )}
+            {mapNotice && (
+              <p className="mt-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10px] font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                {mapNotice}
               </p>
             )}
           </div>
@@ -499,11 +1069,14 @@ export default function SectionHunt({
             </button>
           </div>
 
-          {visibleStores.map((store) => (
+          {!useInteractiveMap && visibleStores.map((store) => (
             <div
               key={`pin-${store.id}`}
               className="absolute z-40 group cursor-pointer pointer-events-auto"
-              style={{ top: store.coords.top, left: store.coords.left }}
+              style={{
+                top: (pinCoordsById[store.id] || store.coords || generateFallbackCoords(0)).top,
+                left: (pinCoordsById[store.id] || store.coords || generateFallbackCoords(0)).left,
+              }}
               onClick={() => setSelectedStore(store)}
             >
               <div className={`relative flex items-center justify-center transition-transform duration-300 ${selectedStore?.id === store.id ? "scale-125" : "hover:scale-110"}`}>
