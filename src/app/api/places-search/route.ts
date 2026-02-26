@@ -20,6 +20,10 @@ type NormalizedResult = {
 const ZIP_RE = /\b(\d{5})(?:-\d{4})?\b/;
 const incomeCache = new Map<string, number | null>();
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function extractZip(address: string): string | null {
   const m = String(address || "").match(ZIP_RE);
   return m?.[1] || null;
@@ -80,86 +84,133 @@ function deriveOsmName(row: any, index: number): string {
 }
 
 async function searchGooglePlaces(query: string, limit: number): Promise<NormalizedResult[]> {
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const apiKey =
+    process.env.GOOGLE_PLACES_API_KEY ||
+    process.env.GOOGLE_MAPS_API_KEY ||
+    process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey) return [];
   const queryVariants = [
     `thrift stores in ${query}`,
     `Goodwill in ${query}`,
     `Salvation Army thrift in ${query}`,
     `vintage clothing store in ${query}`,
+    `consignment store in ${query}`,
+    `second hand clothing in ${query}`,
   ];
   const all: NormalizedResult[] = [];
   const seen = new Set<string>();
 
   for (const variant of queryVariants) {
-    const endpoint = `${GOOGLE_PLACES_API_URL}?query=${encodeURIComponent(
-      variant
-    )}&key=${encodeURIComponent(apiKey)}`;
+    let nextPageToken: string | null = null;
+    let pageCount = 0;
 
-    const res = await fetch(endpoint, {
-      headers: {
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
+    while (pageCount < 2 && all.length < limit) {
+      const endpoint: string = nextPageToken
+        ? `${GOOGLE_PLACES_API_URL}?pagetoken=${encodeURIComponent(nextPageToken)}&key=${encodeURIComponent(apiKey)}`
+        : `${GOOGLE_PLACES_API_URL}?query=${encodeURIComponent(variant)}&key=${encodeURIComponent(apiKey)}`;
 
-    const body = await res.json();
-    if (!res.ok || body?.status === "REQUEST_DENIED" || body?.status === "OVER_QUERY_LIMIT") {
-      continue;
-    }
+      if (nextPageToken) {
+        await sleep(1600);
+      }
 
-    const results = Array.isArray(body?.results) ? body.results : [];
-    for (const r of results) {
-      const id = String(r.place_id || "");
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      all.push({
-        id,
-        name: String(r.name || r.formatted_address?.split(",")[0] || "Store"),
-        address: String(r.formatted_address || "Address unavailable"),
-        source: "google",
-        lat: Number.isFinite(Number(r?.geometry?.location?.lat)) ? Number(r.geometry.location.lat) : null,
-        lng: Number.isFinite(Number(r?.geometry?.location?.lng)) ? Number(r.geometry.location.lng) : null,
-        rating: Number.isFinite(Number(r?.rating)) ? Number(r.rating) : null,
-        review_count: Number.isFinite(Number(r?.user_ratings_total)) ? Number(r.user_ratings_total) : null,
-        zip_code: extractZip(String(r.formatted_address || "")),
-        census_income: null,
+      const res = await fetch(endpoint, {
+        headers: {
+          Accept: "application/json",
+        },
+        cache: "no-store",
       });
-      if (all.length >= limit) break;
+
+      const body = await res.json();
+      const status = String(body?.status || "");
+      if (
+        !res.ok ||
+        status === "REQUEST_DENIED" ||
+        status === "OVER_QUERY_LIMIT" ||
+        status === "INVALID_REQUEST"
+      ) {
+        break;
+      }
+
+      const results = Array.isArray(body?.results) ? body.results : [];
+      for (const r of results) {
+        const id = String(r.place_id || "");
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        all.push({
+          id,
+          name: String(r.name || r.formatted_address?.split(",")[0] || "Store"),
+          address: String(r.formatted_address || "Address unavailable"),
+          source: "google",
+          lat: Number.isFinite(Number(r?.geometry?.location?.lat)) ? Number(r.geometry.location.lat) : null,
+          lng: Number.isFinite(Number(r?.geometry?.location?.lng)) ? Number(r.geometry.location.lng) : null,
+          rating: Number.isFinite(Number(r?.rating)) ? Number(r.rating) : null,
+          review_count: Number.isFinite(Number(r?.user_ratings_total)) ? Number(r.user_ratings_total) : null,
+          zip_code: extractZip(String(r.formatted_address || "")),
+          census_income: null,
+        });
+        if (all.length >= limit) break;
+      }
+
+      nextPageToken = typeof body?.next_page_token === "string" ? body.next_page_token : null;
+      pageCount += 1;
+      if (!nextPageToken || !results.length) break;
     }
-    if (all.length >= limit) break;
+
+    if (all.length >= limit) {
+      break;
+    }
   }
 
   return all.slice(0, limit);
 }
 
 async function searchOsm(query: string, limit: number): Promise<NormalizedResult[]> {
-  const endpoint = `${OSM_SEARCH_URL}?format=jsonv2&limit=${limit}&q=${encodeURIComponent(
-    `thrift store ${query}`
-  )}`;
-  const res = await fetch(endpoint, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "thriftpulse/1.0 (store-search)",
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
+  const variants = [
+    `thrift store ${query}`,
+    `consignment store ${query}`,
+    `vintage clothing store ${query}`,
+  ];
+  const merged: NormalizedResult[] = [];
+  const seen = new Set<string>();
 
-  const body = await res.json();
-  const results = Array.isArray(body) ? body : [];
-  return results.slice(0, limit).map((r: any, i: number) => ({
-    id: String(r.place_id || `osm-${i}`),
-    name: deriveOsmName(r, i),
-    address: String(r.display_name || "Address unavailable"),
-    source: "osm",
-    lat: Number.isFinite(Number(r?.lat)) ? Number(r.lat) : null,
-    lng: Number.isFinite(Number(r?.lon)) ? Number(r.lon) : null,
-    rating: null,
-    review_count: null,
-    zip_code: extractZip(String(r.display_name || "")),
-    census_income: null,
-  }));
+  for (const variant of variants) {
+    const endpoint = `${OSM_SEARCH_URL}?format=jsonv2&limit=${Math.min(limit, 15)}&q=${encodeURIComponent(
+      variant
+    )}`;
+    const res = await fetch(endpoint, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "thriftpulse/1.0 (store-search)",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) continue;
+
+    const body = await res.json();
+    const results = Array.isArray(body) ? body : [];
+    for (const [i, r] of results.entries()) {
+      const row: NormalizedResult = {
+        id: String(r.place_id || `osm-${variant}-${i}`),
+        name: deriveOsmName(r, i),
+        address: String(r.display_name || "Address unavailable"),
+        source: "osm",
+        lat: Number.isFinite(Number(r?.lat)) ? Number(r.lat) : null,
+        lng: Number.isFinite(Number(r?.lon)) ? Number(r.lon) : null,
+        rating: null,
+        review_count: null,
+        zip_code: extractZip(String(r.display_name || "")),
+        census_income: null,
+      };
+      const key = `${row.name.toLowerCase()}|${row.address.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+      if (merged.length >= limit) break;
+    }
+    if (merged.length >= limit) break;
+  }
+
+  return merged.slice(0, limit);
 }
 
 export async function GET(request: Request) {
