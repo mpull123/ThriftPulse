@@ -2097,6 +2097,21 @@ export default function SectionScout({
     });
   };
 
+  const resetDecisionLabFilters = () => {
+    applyPresetPayload({
+      searchTerm: "",
+      confidenceFilter: "high",
+      decisionFilter: "all",
+      styleTierFilter: "all",
+      sortMode: "heat",
+      viewMode: "detailed",
+      lowBuyInOnly: false,
+      maxCardsPerSection: 40,
+    });
+    setHideSimilarStyleSignals(true);
+    setActionNotice("Reset Decision Lab filters to the default view.");
+  };
+
   return (
     <div className="space-y-20 text-left pb-24">
       <section className="rounded-3xl border border-blue-500/20 bg-blue-500/5 p-5">
@@ -2105,134 +2120,207 @@ export default function SectionScout({
           Decide what to source next using evidence, risk, and used-goods profitability.
         </p>
       </section>
-      <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
-          Decision Lab Filters
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-3">
-          <input
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search trends, brands, intel..."
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          />
-          <select
-            value={confidenceFilter}
-            onChange={(e) => setConfidenceFilter(e.target.value as "all" | "high" | "med" | "low")}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value="all">All Confidence</option>
-            <option value="high">High Confidence</option>
-            <option value="med">Medium Confidence</option>
-            <option value="low">Low Confidence</option>
-          </select>
-          <select
-            value={decisionFilter}
-            onChange={(e) => setDecisionFilter(e.target.value as "all" | "Buy" | "Maybe" | "Skip" | "Watchlist")}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value="all">All Decisions</option>
-            <option value="Buy">Buy</option>
-            <option value="Maybe">Maybe</option>
-            <option value="Watchlist">Watchlist</option>
-            <option value="Skip">Skip</option>
-          </select>
-          <select
-            value={styleTierFilter}
-            onChange={(e) => setStyleTierFilter(e.target.value as "all" | "core" | "niche")}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value="all">All Tiers</option>
-            <option value="core">Style Core</option>
-            <option value="niche">Style Niche</option>
-          </select>
-          <select
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as "heat" | "mentions" | "profit")}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value="heat">Sort: Heat</option>
-            <option value="mentions">Sort: Evidence</option>
-            <option value="profit">Sort: Profit</option>
-          </select>
-          <select
-            value={viewMode}
-            onChange={(e) => setViewMode(e.target.value as "compact" | "detailed")}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value="detailed">View: Detailed</option>
-            <option value="compact">View: Compact</option>
-          </select>
-          <select
-            value={maxCardsPerSection}
-            onChange={(e) => setMaxCardsPerSection(Number(e.target.value) as 20 | 40 | 80 | 120)}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
-          >
-            <option value={20}>Max 20/Section</option>
-            <option value={40}>Max 40/Section</option>
-            <option value={80}>Max 80/Section</option>
-            <option value={120}>Max 120/Section</option>
-          </select>
-        </div>
-        <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
-          Showing {visibleBrandNodes.length}/{filteredBrandNodes.length} brand nodes and {visibleTrendNodes.length}/{displayTrendNodes.length} style trends
-          {hideSimilarStyleSignals && hiddenSimilarTrendCount > 0 ? ` • Hidden similar style signals: ${hiddenSimilarTrendCount}` : ""}
-        </p>
-        <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
-          Selected nodes: {selectedIds.length} • Compare selected: {compareIds.length}/4
-        </p>
-        <div className="mt-2">
+      <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Decision Lab Controls
+            </p>
+            <p className="mt-1 text-xs font-bold text-slate-600 dark:text-slate-300">
+              Narrow the board to the best sourcing candidates, then batch-manage selections.
+            </p>
+          </div>
           <button
-            onClick={() => setHideSimilarStyleSignals((prev) => !prev)}
-            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
-              hideSimilarStyleSignals
-                ? "bg-violet-500/10 text-violet-500 border-violet-500/40"
-                : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-700"
-            }`}
-            title="Collapse near-duplicate style headlines into one card"
+            onClick={resetDecisionLabFilters}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+            title="Reset search, filters, sorting, and view settings"
           >
-            {hideSimilarStyleSignals ? "Hide Similar Styles: On" : "Hide Similar Styles: Off"}
+            Reset Filters
           </button>
         </div>
-        <div className="mt-2 flex flex-wrap gap-2 items-center">
-          <button
-            onClick={() => void demoteSelected()}
-            disabled={selectedNodes.length === 0}
-            className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500 text-white disabled:opacity-40 shadow-sm"
-          >
-            Demote Selected ({selectedNodes.length})
-          </button>
-          <button
-            onClick={() => void archiveSelected()}
-            disabled={selectedNodes.length === 0}
-            className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 dark:bg-white text-white dark:text-slate-900 disabled:opacity-40 shadow-sm"
-          >
-            Archive Selected ({selectedNodes.length})
-          </button>
-          <button
-            onClick={() => {
-              setSelectedIds([]);
-              setActionNotice("Cleared selected Decision Lab nodes.");
-            }}
-            disabled={selectedNodes.length === 0}
-            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
-          >
-            Clear Selection
-          </button>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Search</p>
+            <input
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search trends, brands, intel..."
+              className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Filters</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select
+                value={confidenceFilter}
+                onChange={(e) => setConfidenceFilter(e.target.value as "all" | "high" | "med" | "low")}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value="all">All Confidence</option>
+                <option value="high">High Confidence</option>
+                <option value="med">Medium Confidence</option>
+                <option value="low">Low Confidence</option>
+              </select>
+              <select
+                value={decisionFilter}
+                onChange={(e) => setDecisionFilter(e.target.value as "all" | "Buy" | "Maybe" | "Skip" | "Watchlist")}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value="all">All Decisions</option>
+                <option value="Buy">Buy</option>
+                <option value="Maybe">Maybe</option>
+                <option value="Watchlist">Watchlist</option>
+                <option value="Skip">Skip</option>
+              </select>
+              <select
+                value={styleTierFilter}
+                onChange={(e) => setStyleTierFilter(e.target.value as "all" | "core" | "niche")}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value="all">All Style Tiers</option>
+                <option value="core">Style Core</option>
+                <option value="niche">Style Niche</option>
+              </select>
+              <button
+                onClick={() => setLowBuyInOnly((prev) => !prev)}
+                className={`w-full px-4 py-3 rounded-2xl border text-xs font-black uppercase tracking-wide transition-colors ${
+                  lowBuyInOnly
+                    ? "bg-blue-500/10 text-blue-500 border-blue-500/40"
+                    : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"
+                }`}
+                title="Show only lower buy-in opportunities"
+              >
+                {lowBuyInOnly ? "Low Buy-In Only: On" : "Low Buy-In Only: Off"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">View & Sort</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as "heat" | "mentions" | "profit")}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value="heat">Sort: Heat</option>
+                <option value="mentions">Sort: Evidence</option>
+                <option value="profit">Sort: Profit</option>
+              </select>
+              <select
+                value={viewMode}
+                onChange={(e) => setViewMode(e.target.value as "compact" | "detailed")}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value="detailed">View: Detailed</option>
+                <option value="compact">View: Compact</option>
+              </select>
+              <select
+                value={maxCardsPerSection}
+                onChange={(e) => setMaxCardsPerSection(Number(e.target.value) as 20 | 40 | 80 | 120)}
+                className="sm:col-span-2 w-full px-4 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black uppercase tracking-wide outline-none focus:border-emerald-500"
+              >
+                <option value={20}>Show up to 20 per section</option>
+                <option value={40}>Show up to 40 per section</option>
+                <option value={80}>Show up to 80 per section</option>
+                <option value={120}>Show up to 120 per section</option>
+              </select>
+            </div>
+          </div>
         </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Style Cleanup</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setHideSimilarStyleSignals((prev) => !prev)}
+                className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
+                  hideSimilarStyleSignals
+                    ? "bg-violet-500/10 text-violet-500 border-violet-500/40"
+                    : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-700"
+                }`}
+                title="Collapse near-duplicate style headlines into one card"
+              >
+                {hideSimilarStyleSignals ? "Hide Similar Styles: On" : "Hide Similar Styles: Off"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Batch Actions</p>
+            <div className="flex flex-wrap gap-2 items-center">
+              <button
+                onClick={() => void demoteSelected()}
+                disabled={selectedNodes.length === 0}
+                className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-rose-500 text-white disabled:opacity-40 shadow-sm"
+              >
+                Demote Selected ({selectedNodes.length})
+              </button>
+              <button
+                onClick={() => void archiveSelected()}
+                disabled={selectedNodes.length === 0}
+                className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 dark:bg-white text-white dark:text-slate-900 disabled:opacity-40 shadow-sm"
+              >
+                Archive Selected ({selectedNodes.length})
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedIds([]);
+                  setActionNotice("Cleared selected Decision Lab nodes.");
+                }}
+                disabled={selectedNodes.length === 0}
+                className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950 p-3 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Quick Presets</p>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
+              <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Decision Lab Presets</button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
+            <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>
+            <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
+            <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            Brand Nodes: {visibleBrandNodes.length}/{filteredBrandNodes.length}
+          </span>
+          <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            Style Trends: {visibleTrendNodes.length}/{displayTrendNodes.length}
+          </span>
+          <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            Selected: {selectedIds.length}
+          </span>
+          <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            Compare Selected: {compareIds.length}/4
+          </span>
+          {hideSimilarStyleSignals && hiddenSimilarTrendCount > 0 && (
+            <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-violet-500/10 text-violet-600">
+              Hidden Similar Styles: {hiddenSimilarTrendCount}
+            </span>
+          )}
+        </div>
+
         {actionNotice && (
-          <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-emerald-600">
+          <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600">
             {actionNotice}
           </p>
         )}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button onClick={() => applyPreset("high_confidence")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">High Confidence</button>
-          <button onClick={() => applyPreset("low_buy_in")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Low Buy-In</button>
-          <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
-          <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
-          <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
-          <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Decision Lab Presets</button>
-        </div>
       </section>
 
       {showPresetManager && (
