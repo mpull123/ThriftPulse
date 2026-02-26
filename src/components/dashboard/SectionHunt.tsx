@@ -431,6 +431,7 @@ export default function SectionHunt({
   const selectedMarkerRef = useRef<any>(null);
   const lastAutoFitKeyRef = useRef<string>("");
   const geocodeAttemptCacheRef = useRef<Map<string, { lat: number; lng: number } | null>>(new Map());
+  const geocodeAuthNoticeShownRef = useRef(false);
 
   const normalizedStoreData = useMemo(() => {
     const normalized = normalizeStoreRows(stores);
@@ -484,7 +485,7 @@ export default function SectionHunt({
       .catch(() => {
         if (cancelled) return;
         setMapMode("embed");
-        setMapNotice("Interactive Google map unavailable. Using embed mode.");
+        setMapNotice("Interactive map unavailable. Using embedded map view.");
       });
 
     return () => {
@@ -521,6 +522,12 @@ export default function SectionHunt({
           // Geocoder callback API wrapped in a promise for sequential control.
           const result = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
             geocoder.geocode({ address: query }, (results: any[], status: string) => {
+              if (status === "REQUEST_DENIED" && !geocodeAuthNoticeShownRef.current) {
+                geocodeAuthNoticeShownRef.current = true;
+                setMapNotice(
+                  "Map loaded, but address pin placement is limited. Enable Geocoding API for the browser map key."
+                );
+              }
               if (status !== "OK" || !Array.isArray(results) || !results[0]?.geometry?.location) {
                 resolve(null);
                 return;
@@ -604,7 +611,7 @@ export default function SectionHunt({
                 : placesData?.source === "google"
                   ? "Google Places"
                   : "live map";
-            setSearchNotice(`Loaded ${mergedResults.length} ${sourceLabel} result(s).`);
+            setSearchNotice(`Loaded ${mergedResults.length} store result(s) from ${sourceLabel}.`);
             return;
           }
         }
@@ -614,7 +621,7 @@ export default function SectionHunt({
           if (requestId !== latestSearchRequestRef.current) return;
           setDetectedStores(cached);
           setMapZoom(inferDefaultSearchZoom(q, mapScope));
-          setSearchNotice(`Using ${cached.length} cached map result(s) for ${q}.`);
+          setSearchNotice(`Using ${cached.length} cached store result(s) for ${q}.`);
           return;
         }
 
@@ -626,19 +633,19 @@ export default function SectionHunt({
           if (requestId !== latestSearchRequestRef.current) return;
           setDetectedStores(localFiltered);
           setMapZoom(inferDefaultSearchZoom(q, mapScope));
-          setSearchNotice(`Loaded ${localFiltered.length} local store node(s).`);
+          setSearchNotice(`Loaded ${localFiltered.length} saved store node(s).`);
           return;
         }
 
         if (requestId !== latestSearchRequestRef.current) return;
         setDetectedStores(normalizedStoreData);
         setMapZoom(inferDefaultSearchZoom(q, mapScope));
-        setSearchNotice("No live stores found for that search. Showing your saved store nodes.");
+        setSearchNotice("No live stores found for that search. Showing saved store nodes instead.");
       } catch {
         if (requestId !== latestSearchRequestRef.current) return;
         setDetectedStores(normalizedStoreData);
         setMapZoom(inferDefaultSearchZoom(q, mapScope));
-        setSearchNotice("Live map search failed. Showing your saved store nodes.");
+        setSearchNotice("Live map search failed. Showing saved store nodes instead.");
       } finally {
         if (requestId === latestSearchRequestRef.current) {
           setSearching(false);
@@ -663,6 +670,14 @@ export default function SectionHunt({
 
   const visibleStores = showTopOnly ? sortedStores.slice(0, 3) : sortedStores;
   const tripOrder = sortedStores.slice(0, 5);
+
+  useEffect(() => {
+    if (!selectedStore) return;
+    const stillVisible = visibleStores.some((store) => String(store.id) === String(selectedStore.id));
+    if (!stillVisible) {
+      setSelectedStore(null);
+    }
+  }, [visibleStores, selectedStore]);
 
   const storeManifest = useMemo(() => {
     if (!selectedStore) return [];
@@ -837,7 +852,7 @@ export default function SectionHunt({
                 : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"
             }`}
           >
-            {showTopOnly ? "Top Stores On" : "Top Stores Off"}
+            {showTopOnly ? "Top Stores Filter: On" : "Top Stores Filter: Off"}
           </button>
           <div className="text-right">
             <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Target Items</p>
@@ -915,7 +930,7 @@ export default function SectionHunt({
                   </div>
                 ) : (
                   <div className="p-6 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-center">
-                    <p className="text-xs font-bold text-slate-400 italic">No trunk items available yet. Add items in Research first.</p>
+                    <p className="text-xs font-bold text-slate-400 italic">No trunk items available yet. Add items in Radar or Decision Lab first.</p>
                   </div>
                 )}
 
@@ -933,7 +948,7 @@ export default function SectionHunt({
             <div className="flex flex-col h-full">
               <div className="p-6 border-b border-slate-100 dark:border-slate-800">
                 <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-400 italic">
-                  Detected Nodes ({visibleStores.length})
+                  Detected Stores ({visibleStores.length})
                 </h3>
                 {tripOrder.length > 0 && (
                   <div className="mt-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800">
@@ -1042,7 +1057,7 @@ export default function SectionHunt({
             )}
             {mapMode === "loading" && (
               <p className="mt-2 px-3 py-2 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-wide text-slate-500">
-                Loading interactive map...
+                Loading interactive map (Google Maps)...
               </p>
             )}
             {mapNotice && (
@@ -1094,7 +1109,7 @@ export default function SectionHunt({
           {!selectedStore && (
             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-white/90 dark:bg-slate-900/90 backdrop-blur px-8 py-4 rounded-full border border-slate-200 dark:border-slate-700 shadow-2xl z-20 flex items-center gap-4">
               <Crosshair className="text-emerald-500" size={20} />
-              <p className="text-xs font-black uppercase tracking-widest text-slate-500">Select a node to scan inventory</p>
+              <p className="text-xs font-black uppercase tracking-widest text-slate-500">Select a store to scan inventory</p>
             </div>
           )}
         </div>
