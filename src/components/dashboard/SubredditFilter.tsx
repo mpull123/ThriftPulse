@@ -327,9 +327,25 @@ export default function SubredditFilter() {
     if (failed) {
       return `Review ${failed.source} in GitHub Actions logs, adjust secrets/limits if needed, then rerun the sync workflow.`;
     }
-    const emptyRun = sourceRows.find((s) => s.emptyRun);
-    if (emptyRun) {
-      return `${emptyRun.source} returned zero accepted terms. Loosen source tuning secrets, then rerun sync to restore candidate flow.`;
+    const criticalEmptyRun = sourceRows.find(
+      (s) => s.emptyRun && ["fashion_rss", "google_news_rss", "ebay_discovery"].includes(s.source)
+    );
+    if (criticalEmptyRun) {
+      return `${criticalEmptyRun.source} returned zero accepted terms. Loosen source tuning secrets, then rerun sync to restore candidate flow.`;
+    }
+
+    const googleTrendsEmpty = sourceRows.find((s) => s.source === "google_trends" && s.emptyRun);
+    if (googleTrendsEmpty) {
+      const alternativeDiscoveryFlow = sourceRows.some((s) => {
+        if (!["fashion_rss", "google_news_rss", "fashion_corpus_ai", "ebay_discovery"].includes(s.source)) return false;
+        const captured = typeof s.capturedTerms === "number" ? s.capturedTerms : 0;
+        const active = typeof s.activeSignalCount === "number" ? s.activeSignalCount : 0;
+        return captured > 0 || active > 0;
+      });
+      if (alternativeDiscoveryFlow) {
+        return "Pipeline looks healthy overall. Google Trends returned zero accepted terms this cycle, but other sources are still producing candidates. Recheck only if this repeats across multiple sync runs.";
+      }
+      return "Google Trends returned zero accepted terms this cycle and discovery coverage is thin. Widen source tuning secrets, then rerun sync.";
     }
     if (metrics.compCoveragePct < 40) {
       return "Comp coverage is low. Run another sync cycle and prioritize eBay comp collection for stronger pricing confidence.";
