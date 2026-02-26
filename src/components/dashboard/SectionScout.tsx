@@ -251,16 +251,6 @@ function inferBrandsForTrend(
   return [...brands].slice(0, 5);
 }
 
-function hashString(input: string): number {
-  let hash = 0;
-  const text = String(input || "");
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash << 5) - hash + text.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
 function normalizeTrendNameForDedupe(name: string): string {
   const normalized = String(name || "")
     .toLowerCase()
@@ -453,23 +443,22 @@ function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
   const explicitMentionCount = Number(signal?.mention_count || 0);
   if (explicitMentionCount > 0) return explicitMentionCount;
 
-  const heat = Number(signal?.heat_score || 0);
-  const cues = Array.isArray(signal?.visual_cues) ? signal.visual_cues.length : 0;
-  const hasBrand = Boolean(String(signal?.hook_brand || "").trim());
-  const hasSentiment = Boolean(String(signal?.market_sentiment || "").trim());
   const sample = Number(latestComp?.sample_size || 0);
-  const jitter = hashString(String(signal?.trend_name || "")) % 21;
+  const sourceSignalCount = Number(signal?.source_signal_count || 0);
+  const ebaySamples = Number(signal?.ebay_sample_count || 0);
+  const sourceDiversity =
+    (Number(signal?.ebay_sample_count || 0) > 0 ? 1 : 0) +
+    (Number(signal?.google_trend_hits || 0) > 0 ? 1 : 0) +
+    (Number(signal?.ai_corpus_hits || 0) > 0 ? 1 : 0) +
+    (Number(signal?.ebay_discovery_hits || 0) > 0 ? 1 : 0);
 
-  const estimated =
-    18 +
-    Math.round(heat * 1.35) +
-    Math.min(22, cues * 4) +
-    (hasBrand ? 11 : 0) +
-    (hasSentiment ? 8 : 0) +
-    Math.min(35, sample * 3) +
-    jitter;
+  const derivedEvidencePoints =
+    Math.min(90, Math.round(ebaySamples / 3)) +
+    Math.min(30, sample * 3) +
+    Math.min(40, sourceSignalCount * 10) +
+    sourceDiversity * 8;
 
-  return Math.max(12, Math.min(280, estimated));
+  return Math.max(0, Math.min(280, derivedEvidencePoints));
 }
 
 function getSignalScore(signal: any, latestComp: CompCheck | null): number {
@@ -492,7 +481,6 @@ function getSignalScore(signal: any, latestComp: CompCheck | null): number {
     normalizeTrendNameForDedupe(trendName).split(" ").filter(Boolean).length <= 2
       ? 10
       : 0;
-  const jitter = hashString(trendName) % 7;
   const score =
     8 +
     Math.round(heat * 0.42) +
@@ -501,7 +489,7 @@ function getSignalScore(signal: any, latestComp: CompCheck | null): number {
     Math.min(10, Math.round(sourceSignalCount * 1.3)) +
     sourceDiversity * 4 +
     specificity +
-    jitter -
+    (sourceDiversity >= 3 ? 2 : 0) -
     genericPenalty;
   return Math.max(10, Math.min(99, score));
 }
@@ -2635,7 +2623,9 @@ export default function SectionScout({
                      <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-3">
                        <p className="text-[10px] font-black uppercase tracking-wider text-blue-600">Style guidance pending</p>
                        <p className="mt-1 text-[10px] font-bold text-blue-700 dark:text-blue-300">
-                         Open details to auto-generate style guidance for this node.
+                         {styleProfile.status === "invalid"
+                           ? "Saved style guidance needs regeneration. Open details to regenerate and save it."
+                           : "No saved style guidance yet. Open details to generate and save it for this node."}
                        </p>
                      </div>
                    )}

@@ -499,7 +499,9 @@ export default function DashboardPage() {
       <main className="relative z-10 flex-1 h-full overflow-y-auto p-10 xl:p-14">
         <FadeIn>
           <header className="mb-10 text-left rounded-[2rem] border border-white/70 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/70 backdrop-blur-md p-6 xl:p-8 shadow-[0_20px_40px_rgba(15,23,42,0.06)] dark:shadow-[0_24px_44px_rgba(2,6,23,0.45)]">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500 mb-2 italic">Sector: 30064 // {activeView.toUpperCase()}</h2>
+          <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500 mb-2 italic">
+            Sector: 30064 // {String(viewLabels[activeView] || activeView).toUpperCase()}
+          </h2>
           <h3 className="text-4xl xl:text-5xl font-black italic uppercase tracking-tight text-slate-900 dark:text-white">
              <span className="bg-gradient-to-r from-slate-900 via-slate-700 to-emerald-600 bg-clip-text text-transparent dark:from-white dark:via-slate-100 dark:to-emerald-300">
                {viewLabels[activeView]}
@@ -551,10 +553,10 @@ export default function DashboardPage() {
                 Radar: {radarSignals.length}
               </span>
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                Decision: {decisionLabSignals.length}
+                Decision Lab: {decisionLabSignals.length}
               </span>
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                Hot: {hotSignalCount}
+                Hot Signals: {hotSignalCount}
               </span>
               <span className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                 Stores: {realStores.length}
@@ -645,11 +647,14 @@ export default function DashboardPage() {
             className="fixed inset-0 bg-slate-950/45 backdrop-blur-[1px] z-40"
             onClick={() => setSelectedNode(null)}
           />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl max-h-[88vh] bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-3xl p-8 overflow-y-auto animate-in zoom-in-95 duration-200">
-            <button onClick={() => setSelectedNode(null)} className="mb-8 flex items-center text-xs font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors">
-              <X size={16} className="mr-2" /> Close
-            </button>
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-6 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-3xl overflow-hidden animate-in zoom-in-95 duration-200 mt-1 md:mt-2">
+            <div className="max-h-[88vh] overflow-y-auto p-8 [scrollbar-gutter:stable]">
+            <div className="sticky top-0 z-10 -mx-8 -mt-8 mb-6 px-8 py-4 bg-white/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200/80 dark:border-slate-800/80">
+              <button onClick={() => setSelectedNode(null)} className="flex items-center text-xs font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors">
+                <X size={16} className="mr-2" /> Close
+              </button>
+            </div>
             
             <div className="mb-8">
               <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${selectedNode.type === 'brand' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}>
@@ -722,10 +727,16 @@ export default function DashboardPage() {
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center">
                     <CheckSquare size={14} className="mr-2" /> Style Guidance
                   </h4>
+                  <div className="min-h-[220px]">
                   {styleProfileLoading ? (
-                    <p className="text-sm font-bold italic text-blue-600 dark:text-blue-300">
-                      Generating style guidance...
-                    </p>
+                    <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-3">
+                      <p className="text-sm font-bold italic text-blue-600 dark:text-blue-300">
+                        Generating style guidance...
+                      </p>
+                      <p className="mt-1 text-xs font-bold text-blue-700/80 dark:text-blue-300/80">
+                        This runs once for nodes without a saved style profile, then saves the result.
+                      </p>
+                    </div>
                   ) : selectedStyleProfile?.ok && selectedStyleProfile.profile ? (
                     <div className="space-y-3">
                       <div>
@@ -782,9 +793,12 @@ export default function DashboardPage() {
                     </div>
                   ) : (
                     <p className="text-sm font-bold italic text-slate-600 dark:text-slate-300">
-                      Style guidance will auto-generate when this node is opened.
+                      {String(selectedNode?.signal_id || "").trim()
+                        ? "Style guidance will auto-generate when this node is opened."
+                        : "This node is missing a signal ID, so style guidance cannot auto-generate yet."}
                     </p>
                   )}
+                  </div>
                 </div>
               ) : Array.isArray(selectedNode.what_to_buy) && selectedNode.what_to_buy.length > 0 ? (
                 <div className="bg-slate-50 dark:bg-white/5 p-5 rounded-3xl border border-slate-200 dark:border-slate-700">
@@ -854,8 +868,9 @@ export default function DashboardPage() {
                   </button>
                 </div>
               </div>
+              </div>
             </div>
-          </div>
+            </div>
           </div>
           </>
         )}
@@ -884,8 +899,8 @@ export default function DashboardPage() {
               <p className="text-[9px] font-black uppercase tracking-widest text-blue-500">Shared Focus</p>
               <p className="text-xs font-black italic text-slate-700 dark:text-slate-200 mt-1">{crossPageFocus}</p>
               <div className="mt-3 flex gap-2">
-                <button onClick={() => openViewWithFocus("scout")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Research</button>
-                <button onClick={() => openViewWithFocus("analysis")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Trends</button>
+                <button onClick={() => openViewWithFocus("scout")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Decision Lab</button>
+                <button onClick={() => openViewWithFocus("analysis")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Radar</button>
                 <button onClick={() => setCrossPageFocus("")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase text-rose-500">Clear</button>
               </div>
             </div>
