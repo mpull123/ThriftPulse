@@ -289,6 +289,166 @@ function getTrendDedupeKey(signal: any): string {
   return `${nameKey}::${brandKey}`;
 }
 
+const SCOUT_SIMILARITY_STOP_WORDS = new Set([
+  "a",
+  "all",
+  "and",
+  "anti",
+  "are",
+  "best",
+  "but",
+  "by",
+  "celeb",
+  "celebs",
+  "circuit",
+  "cool",
+  "editor",
+  "editors",
+  "everyone",
+  "exactly",
+  "favorite",
+  "favorites",
+  "fashion",
+  "for",
+  "found",
+  "from",
+  "get",
+  "guys",
+  "here",
+  "how",
+  "in",
+  "is",
+  "it",
+  "its",
+  "look",
+  "looks",
+  "most",
+  "need",
+  "new",
+  "obsession",
+  "of",
+  "on",
+  "our",
+  "outfit",
+  "outfits",
+  "pair",
+  "pairs",
+  "popularity",
+  "rise",
+  "spring",
+  "still",
+  "street",
+  "style",
+  "styling",
+  "summer",
+  "that",
+  "the",
+  "these",
+  "this",
+  "to",
+  "top",
+  "trend",
+  "trends",
+  "ways",
+  "wear",
+  "wearing",
+  "why",
+  "winter",
+  "with",
+  "worth",
+  "year",
+]);
+
+const SCOUT_ITEM_FAMILY_TOKENS = [
+  "jacket",
+  "coat",
+  "pant",
+  "trouser",
+  "jean",
+  "skirt",
+  "dress",
+  "hoodie",
+  "sweatshirt",
+  "sweater",
+  "cardigan",
+  "boot",
+  "sneaker",
+  "shoe",
+  "bag",
+  "tote",
+  "backpack",
+  "vest",
+  "shirt",
+  "tshirt",
+];
+
+function tokenizeScoutSimilarity(text: string): string[] {
+  const tokens = normalizeTrendNameForDedupe(String(text || ""))
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => !/^(19|20)\d{2}$/.test(token))
+    .filter((token) => !SCOUT_SIMILARITY_STOP_WORDS.has(token));
+  return [...new Set(tokens)];
+}
+
+function getStyleNodeSimilarityTokens(node: any): string[] {
+  const titleTokens = tokenizeScoutSimilarity(String(node?.name || ""));
+  const brandTokens = tokenizeScoutSimilarity(String(node?.brandRef || ""));
+  return [...new Set([...brandTokens, ...titleTokens])];
+}
+
+function getStyleNodeBrandKey(node: any): string {
+  const brandRef = tokenizeScoutSimilarity(String(node?.brandRef || "")).join(" ");
+  if (brandRef) return brandRef;
+  const detected = detectBrandsInText(String(node?.name || ""));
+  return tokenizeScoutSimilarity(detected.join(" ")).join(" ");
+}
+
+function getStyleNodeFamily(node: any): string {
+  const tokens = getStyleNodeSimilarityTokens(node);
+  return SCOUT_ITEM_FAMILY_TOKENS.find((token) => tokens.includes(token)) || "";
+}
+
+function areStyleNodesSimilar(a: any, b: any): boolean {
+  if (String(a?.type || "") !== "style" || String(b?.type || "") !== "style") return false;
+
+  const brandA = getStyleNodeBrandKey(a);
+  const brandB = getStyleNodeBrandKey(b);
+  if (brandA && brandB && brandA !== brandB) return false;
+
+  const familyA = getStyleNodeFamily(a);
+  const familyB = getStyleNodeFamily(b);
+  if (familyA && familyB && familyA !== familyB) return false;
+
+  const tokensA = getStyleNodeSimilarityTokens(a);
+  const tokensB = getStyleNodeSimilarityTokens(b);
+  if (tokensA.length < 2 || tokensB.length < 2) return false;
+
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+  let overlap = 0;
+  for (const token of setA) {
+    if (setB.has(token)) overlap += 1;
+  }
+  const smaller = Math.max(1, Math.min(setA.size, setB.size));
+  return overlap / smaller >= 0.8;
+}
+
+function suppressSimilarStyleNodes(nodes: any[]): { items: any[]; hiddenCount: number } {
+  const kept: any[] = [];
+  let hiddenCount = 0;
+  for (const node of nodes) {
+    const isSimilar = kept.some((existing) => areStyleNodesSimilar(existing, node));
+    if (isSimilar) {
+      hiddenCount += 1;
+      continue;
+    }
+    kept.push(node);
+  }
+  return { items: kept, hiddenCount };
+}
+
 function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
   const explicitMentionCount = Number(signal?.mention_count || 0);
   if (explicitMentionCount > 0) return explicitMentionCount;
@@ -1154,11 +1314,18 @@ export default function SectionScout({
   const [showPresetManager, setShowPresetManager] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [actionNotice, setActionNotice] = useState("");
+  const [hideSimilarStyleSignals, setHideSimilarStyleSignals] = useState(true);
 
   useEffect(() => {
     const term = String(focusTerm || "").trim();
     setSearchTerm(term);
   }, [focusTerm]);
+
+  useEffect(() => {
+    setCompareIds([]);
+    setSelectedIds([]);
+    setActionNotice("");
+  }, [hideSimilarStyleSignals]);
 
   useEffect(() => {
     try {
@@ -1657,14 +1824,24 @@ export default function SectionScout({
     [trendNodes, confidenceFilter, decisionFilter, searchTerm, sortMode, styleTierFilter, lowBuyInOnly]
   );
 
+  const dedupedFilteredTrendResult = useMemo(
+    () =>
+      hideSimilarStyleSignals
+        ? suppressSimilarStyleNodes(filteredTrendNodes)
+        : { items: filteredTrendNodes, hiddenCount: 0 },
+    [filteredTrendNodes, hideSimilarStyleSignals]
+  );
+  const displayTrendNodes = dedupedFilteredTrendResult.items;
+  const hiddenSimilarTrendCount = dedupedFilteredTrendResult.hiddenCount;
+
   const visibleBrandNodes = useMemo(
     () => filteredBrandNodes.slice(0, maxCardsPerSection),
     [filteredBrandNodes, maxCardsPerSection]
   );
 
   const visibleTrendNodes = useMemo(
-    () => filteredTrendNodes.slice(0, maxCardsPerSection),
-    [filteredTrendNodes, maxCardsPerSection]
+    () => displayTrendNodes.slice(0, maxCardsPerSection),
+    [displayTrendNodes, maxCardsPerSection]
   );
 
   const comparePool = useMemo(
@@ -1926,7 +2103,7 @@ export default function SectionScout({
       </section>
       <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
-          Research Filters
+          Decision Lab Filters
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-3">
           <input
@@ -1994,11 +2171,25 @@ export default function SectionScout({
           </select>
         </div>
         <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
-          Showing {visibleBrandNodes.length}/{filteredBrandNodes.length} brand nodes and {visibleTrendNodes.length}/{filteredTrendNodes.length} style trends
+          Showing {visibleBrandNodes.length}/{filteredBrandNodes.length} brand nodes and {visibleTrendNodes.length}/{displayTrendNodes.length} style trends
+          {hideSimilarStyleSignals && hiddenSimilarTrendCount > 0 ? ` • Hidden similar style signals: ${hiddenSimilarTrendCount}` : ""}
         </p>
         <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
           Selected nodes: {selectedIds.length} • Compare selected: {compareIds.length}/4
         </p>
+        <div className="mt-2">
+          <button
+            onClick={() => setHideSimilarStyleSignals((prev) => !prev)}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
+              hideSimilarStyleSignals
+                ? "bg-violet-500/10 text-violet-500 border-violet-500/40"
+                : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-700"
+            }`}
+            title="Collapse near-duplicate style headlines into one card"
+          >
+            {hideSimilarStyleSignals ? "Hide Similar Styles: On" : "Hide Similar Styles: Off"}
+          </button>
+        </div>
         <div className="mt-2 flex flex-wrap gap-2 items-center">
           <button
             onClick={() => void demoteSelected()}
@@ -2015,7 +2206,10 @@ export default function SectionScout({
             Archive Selected ({selectedNodes.length})
           </button>
           <button
-            onClick={() => setSelectedIds([])}
+            onClick={() => {
+              setSelectedIds([]);
+              setActionNotice("Cleared selected Decision Lab nodes.");
+            }}
             disabled={selectedNodes.length === 0}
             className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
           >
@@ -2040,7 +2234,7 @@ export default function SectionScout({
       {showPresetManager && (
         <section className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex items-center justify-between mb-4">
-            <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Research Preset Manager</h5>
+            <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Decision Lab Preset Manager</h5>
             <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close</button>
           </div>
           <div className="flex gap-2 mb-4">
@@ -2504,7 +2698,7 @@ export default function SectionScout({
                     }}
                     className="w-full py-3 bg-rose-500/10 text-rose-500 rounded-2xl font-black uppercase italic text-[11px] tracking-widest hover:bg-rose-500/20 transition-all"
                   >
-                    Track in Radar
+                    Move to Radar + Open
                   </button>
                 )}
                 {node.classification_flag && onReclassifySignal && (
@@ -2562,7 +2756,7 @@ export default function SectionScout({
         {visibleTrendNodes.length === 0 && (
           <div className="mt-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center">
             <p className="text-xs font-black uppercase tracking-widest text-slate-400">
-              No style trends promoted yet. Use Promote on Radar to move nodes here.
+              No style trends promoted yet. Use "Promote to Decision Lab" in Radar to move nodes here.
             </p>
           </div>
         )}
