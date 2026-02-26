@@ -24,7 +24,15 @@ export function ListingModal({ item, isOpen, onClose }: ListingModalProps) {
             <h3 className="text-3xl font-black italic uppercase tracking-tighter">{item.trend_name}</h3>
             <p className="text-emerald-500 font-bold text-xs uppercase tracking-widest mt-1 italic">Generated eBay Draft</p>
           </div>
-          <button onClick={onClose} className="h-12 w-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-red-500 transition-all">✕</button>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close listing modal"
+            aria-label="Close listing modal"
+            className="h-12 w-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-red-500 transition-all"
+          >
+            ✕
+          </button>
         </div>
         
         <div className="bg-slate-50 dark:bg-slate-950 p-8 rounded-2xl border border-slate-200 dark:border-slate-800 whitespace-pre-wrap text-sm leading-relaxed mb-8 max-h-[40vh] overflow-y-auto text-left font-medium text-slate-600 dark:text-slate-300">
@@ -33,13 +41,14 @@ export function ListingModal({ item, isOpen, onClose }: ListingModalProps) {
 
         <div className="flex flex-col sm:flex-row gap-4">
           <button 
+            type="button"
             onClick={copyToClipboard}
             disabled={!item.ai_description}
             className="flex-1 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 dark:disabled:bg-slate-800 text-slate-950 font-black py-5 rounded-2xl transition-all uppercase italic tracking-tighter"
           >
             📋 Copy for eBay
           </button>
-          <button onClick={onClose} className="px-10 py-5 border border-slate-200 dark:border-slate-700 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 font-bold text-slate-500 transition-all">Close</button>
+          <button type="button" onClick={onClose} className="px-10 py-5 border border-slate-200 dark:border-slate-700 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 font-bold text-slate-500 transition-all">Close</button>
         </div>
       </div>
     </div>
