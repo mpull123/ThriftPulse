@@ -1846,6 +1846,18 @@ export default function SectionScout({
     [comparePool, selectedIds]
   );
 
+  useEffect(() => {
+    const visibleIds = new Set(comparePool.map((node: any) => String(node.id)));
+    setCompareIds((prev) => {
+      const next = prev.filter((id) => visibleIds.has(String(id)));
+      return next.length === prev.length ? prev : next;
+    });
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => visibleIds.has(String(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [comparePool]);
+
   const getSignalIdsForNode = (node: any): string[] => {
     if (Array.isArray(node?.signal_ids) && node.signal_ids.length > 0) {
       return node.signal_ids.map((id: any) => String(id || "").trim()).filter(Boolean);
@@ -1983,6 +1995,7 @@ export default function SectionScout({
       setSearchTerm("");
       setConfidenceFilter("high");
       setDecisionFilter("all");
+      setStyleTierFilter("all");
       setSortMode("heat");
       setLowBuyInOnly(false);
       return;
@@ -1991,6 +2004,7 @@ export default function SectionScout({
       setSearchTerm("");
       setConfidenceFilter("all");
       setDecisionFilter("all");
+      setStyleTierFilter("all");
       setSortMode("profit");
       setLowBuyInOnly(true);
       return;
@@ -1999,6 +2013,7 @@ export default function SectionScout({
       setSearchTerm("");
       setConfidenceFilter("med");
       setDecisionFilter("Buy");
+      setStyleTierFilter("all");
       setSortMode("profit");
       setLowBuyInOnly(false);
       return;
@@ -2006,6 +2021,7 @@ export default function SectionScout({
     setSearchTerm("vintage 90s y2k");
     setConfidenceFilter("all");
     setDecisionFilter("all");
+    setStyleTierFilter("all");
     setSortMode("heat");
     setLowBuyInOnly(false);
   };

@@ -31,16 +31,6 @@ type HeatmapSavedPreset = {
   payload: HeatmapPresetPayload;
 };
 
-function hashString(input: string): number {
-  let hash = 0;
-  const text = String(input || "");
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash << 5) - hash + text.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
 const RADAR_SIMILARITY_STOP_WORDS = new Set([
   "a",
   "all",
@@ -253,38 +243,20 @@ function dedupeSimilarRadarItems(items: any[]): { items: any[]; hiddenCount: num
   return { items: kept, hiddenCount };
 }
 
-function getTrendMentions(signal: any, latestComp: CompCheck | null): number {
-  const explicitMentionCount = Number(signal?.mention_count || 0);
-  if (explicitMentionCount > 0) return explicitMentionCount;
-
-  const heat = Number(signal?.heat_score || 0);
-  const cues = Array.isArray(signal?.visual_cues) ? signal.visual_cues.length : 0;
-  const hasBrand = Boolean(String(signal?.hook_brand || "").trim());
-  const hasSentiment = Boolean(String(signal?.market_sentiment || "").trim());
-  const sample = Number(latestComp?.sample_size || 0);
-  const jitter = hashString(String(signal?.trend_name || "")) % 21;
-
-  const estimated =
-    18 +
-    Math.round(heat * 1.35) +
-    Math.min(22, cues * 4) +
-    (hasBrand ? 11 : 0) +
-    (hasSentiment ? 8 : 0) +
-    Math.min(35, sample * 3) +
-    jitter;
-
-  return Math.max(12, Math.min(280, estimated));
+function getStoredMentionCount(signal: any): number | null {
+  const raw = signal?.mention_count;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.round(n));
 }
 
-function getSignalScore(signal: any, latestComp: CompCheck | null): number {
-  const explicitScore = Number(signal?.confidence_score || 0);
-  if (explicitScore > 0) return Math.max(10, Math.min(99, Math.round(explicitScore)));
-
-  const mentions = getTrendMentions(signal, latestComp);
-  const heat = Number(signal?.heat_score || 0);
-  const sample = Number(latestComp?.sample_size || 0);
-  const score = 15 + Math.round(heat * 0.45) + Math.min(20, Math.round(mentions / 8)) + Math.min(12, sample * 2);
-  return Math.max(10, Math.min(99, score));
+function getStoredSignalScore(signal: any): number | null {
+  const raw = signal?.confidence_score;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(10, Math.min(99, Math.round(n)));
 }
 
 function getFallbackConfidence(signal: any, signalScore = 0): ConfidenceLevel {
@@ -451,10 +423,20 @@ function buildPriceSnapshot({
 }: {
   exitPrice: number;
   confidence: ConfidenceLevel;
-  mentions: number;
+  mentions: number | null;
   latestComp: CompCheck | null;
 }) {
-  const baseSale = Math.max(15, toDollar(exitPrice));
+  const compLow = Number(latestComp?.price_low || 0);
+  const compHigh = Number(latestComp?.price_high || 0);
+  const compMid =
+    compLow > 0 && compHigh > 0
+      ? (compLow + compHigh) / 2
+      : compHigh > 0
+        ? compHigh
+        : compLow > 0
+          ? compLow
+          : 0;
+  const baseSale = Math.max(15, toDollar(compMid > 0 ? compMid : exitPrice));
   const rangePct = confidence === "high" ? 0.08 : confidence === "med" ? 0.12 : 0.18;
   const saleLow = Math.max(10, toDollar(baseSale * (1 - rangePct)));
   const saleHigh = Math.max(saleLow, toDollar(baseSale * (1 + rangePct)));
@@ -465,7 +447,7 @@ function buildPriceSnapshot({
   const netAfterFixed = Math.max(0, baseSale * (1 - feeRate) - shippingCost - prepCost);
   const targetBuy = Math.max(4, Math.min(60, toDollar(netAfterFixed * 0.65)));
   const expectedProfit = Math.max(0, toDollar(netAfterFixed - targetBuy));
-  const weakEvidence = !latestComp && mentions < 80;
+  const weakEvidence = !latestComp && (mentions === null || mentions < 80);
 
   let decision: DecisionLabel = "Maybe";
   if (weakEvidence) decision = "Watchlist";
@@ -582,11 +564,13 @@ export default function SectionHeatmap({
   const enrichedData = useMemo(() => data.map((item) => {
     const latestComp = getLatestCompCheck(item, compChecks);
     const compConfidence = getConfidenceFromComp(latestComp);
-    const mentions = getTrendMentions(item, latestComp);
-    const signalScore = getSignalScore(item, latestComp);
+    const mentions = getStoredMentionCount(item);
+    const signalScore = getStoredSignalScore(item);
     const confidence = latestComp
       ? compConfidence
-      : getFallbackConfidence(item, signalScore);
+      : signalScore !== null
+        ? getFallbackConfidence(item, signalScore)
+        : "low";
     const pricing = buildPriceSnapshot({
       exitPrice: Number(item?.exit_price || 0),
       confidence,
@@ -612,7 +596,7 @@ export default function SectionHeatmap({
       mentions,
       signalScore,
       confidence,
-      confidenceReason: getConfidenceReason({ latestComp, confidence, mentions }),
+      confidenceReason: getConfidenceReason({ latestComp, confidence, mentions: mentions ?? 0 }),
       pricing,
       actionRating,
       inferredType: String(item?.track || "").toLowerCase().includes("brand") ? "brand" : "style",
@@ -628,13 +612,13 @@ export default function SectionHeatmap({
   const filteredData = enrichedData.filter((item) => {
     if (verifiedOnly && !(item.confidence === "high" || item.confidence === "med")) return false;
     if (freshOnly && item.compStatus !== "fresh") return false;
-    if (lowBuyInOnly && Number(item.exit_price || 0) > 90) return false;
+    if (lowBuyInOnly) {
+      const targetBuy = Number(item?.pricing?.targetBuy ?? 0);
+      if (!Number.isFinite(targetBuy) || targetBuy <= 0 || targetBuy > 35) return false;
+    }
     if (confidenceFilter !== "all" && item.confidence !== confidenceFilter) return false;
     if (sourceFilter !== "all" && item.inferredType !== sourceFilter) return false;
-    if (styleTierFilter !== "all") {
-      if (item.inferredType !== "style") return false;
-      if (item.styleTier !== styleTierFilter) return false;
-    }
+    if (styleTierFilter !== "all" && item.inferredType === "style" && item.styleTier !== styleTierFilter) return false;
     const q = searchTerm.trim().toLowerCase();
     if (q) {
       const haystack = [
@@ -651,9 +635,9 @@ export default function SectionHeatmap({
   });
 
   const sortedData = [...filteredData].sort((a, b) => {
-    if (sortMode === "mentions") return (b.mentions || 0) - (a.mentions || 0);
+    if (sortMode === "mentions") return Number(b.mentions ?? -1) - Number(a.mentions ?? -1);
     if (sortMode === "heat") return (b.heat_score || 0) - (a.heat_score || 0);
-    return (b.signalScore || 0) - (a.signalScore || 0);
+    return Number(b.signalScore ?? -1) - Number(a.signalScore ?? -1);
   });
   const dedupedRadarResult = useMemo(
     () => (hideSimilarCards ? dedupeSimilarRadarItems(sortedData) : { items: sortedData, hiddenCount: 0 }),
@@ -662,6 +646,14 @@ export default function SectionHeatmap({
   const displayData = dedupedRadarResult.items;
   const hiddenSimilarCount = dedupedRadarResult.hiddenCount;
   const visibleData = displayData.slice(0, cardLimit);
+
+  useEffect(() => {
+    const visibleIds = new Set(visibleData.map((item) => String(item.id || item.trend_name)));
+    setCompareIds((prev) => {
+      const next = prev.filter((id) => visibleIds.has(String(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [visibleData]);
 
   const missingCompCount = visibleData.filter((item) => item.compStatus === "none").length;
   const freshCompCount = visibleData.filter((item) => item.compStatus === "fresh").length;
@@ -719,6 +711,7 @@ export default function SectionHeatmap({
       setSearchTerm("");
       setConfidenceFilter("high");
       setSourceFilter("all");
+      setStyleTierFilter("all");
       setSortMode("signal");
       setVerifiedOnly(true);
       setFreshOnly(false);
@@ -729,6 +722,7 @@ export default function SectionHeatmap({
       setSearchTerm("");
       setConfidenceFilter("all");
       setSourceFilter("style");
+      setStyleTierFilter("all");
       setSortMode("signal");
       setVerifiedOnly(false);
       setFreshOnly(false);
@@ -739,6 +733,7 @@ export default function SectionHeatmap({
       setSearchTerm("");
       setConfidenceFilter("med");
       setSourceFilter("style");
+      setStyleTierFilter("all");
       setSortMode("mentions");
       setVerifiedOnly(true);
       setFreshOnly(false);
@@ -748,6 +743,7 @@ export default function SectionHeatmap({
     setSearchTerm("vintage 90s y2k");
     setConfidenceFilter("all");
     setSourceFilter("all");
+    setStyleTierFilter("all");
     setSortMode("heat");
     setVerifiedOnly(false);
     setFreshOnly(false);
@@ -1252,7 +1248,9 @@ function HeatmapTile({
         </div>
         <div className="flex items-center space-x-1">
           <TrendingUp size={10} className={isHot ? 'text-emerald-500' : 'text-slate-600'} />
-          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">{`Signal strength ${item.signalScore || 0}`}</span>
+          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">
+            {typeof item.signalScore === "number" ? `Signal strength ${item.signalScore}` : "Signal score unavailable"}
+          </span>
         </div>
         <p className="mt-1 text-[8px] font-black uppercase tracking-wider text-slate-500">
           Buy ≤ ${item.pricing?.targetBuy || 0} • Sale ${item.pricing?.saleLow || 0}-${item.pricing?.saleHigh || 0}
