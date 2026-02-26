@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabase } from "@/lib/supabase";
 import { Activity, AlertTriangle, CheckCircle2, Clock3, Database, RefreshCw, Signal } from "lucide-react";
 
@@ -150,38 +150,51 @@ function getSourceMetricTiles(row: SourceStatusRow): SourceMetricTile[] {
 
 export default function SubredditFilter() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [jobs, setJobs] = useState<CollectorJobRow[]>([]);
   const [signals, setSignals] = useState<SignalRow[]>([]);
   const [compChecks, setCompChecks] = useState<CompCheckRow[]>([]);
   const [readErrors, setReadErrors] = useState<string[]>([]);
+  const requestInFlightRef = useRef(false);
 
-  const loadSourceHealth = useCallback(async () => {
-    setLoading(true);
+  const loadSourceHealth = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent);
+    if (requestInFlightRef.current) return;
+    requestInFlightRef.current = true;
+    if (silent) setRefreshing(true);
+    else setLoading(true);
     setReadErrors([]);
-    const [jobsRes, signalsRes, compsRes] = await Promise.all([
-      supabase
-        .from("collector_jobs")
-        .select("source_name,status,completed_at,error_message,created_at")
-        .order("created_at", { ascending: false })
-        .limit(100),
-      supabase
-        .from("market_signals")
-        .select("id,trend_name,hook_brand,mention_count,confidence_score,heat_score,updated_at,archived_at,ebay_sample_count,fashion_rss_hits,google_news_rss_hits,google_trend_hits,ai_corpus_hits,ebay_discovery_hits,source_signal_count")
-        .order("updated_at", { ascending: false })
-        .limit(1000),
-      supabase
-        .from("comp_checks")
-        .select("signal_id,trend_name,checked_at,sample_size")
-        .order("checked_at", { ascending: false })
-        .limit(500),
-    ]);
+    try {
+      const [jobsRes, signalsRes, compsRes] = await Promise.all([
+        supabase
+          .from("collector_jobs")
+          .select("source_name,status,completed_at,error_message,created_at")
+          .order("created_at", { ascending: false })
+          .limit(100),
+        supabase
+          .from("market_signals")
+          .select("id,trend_name,hook_brand,mention_count,confidence_score,heat_score,updated_at,archived_at,ebay_sample_count,fashion_rss_hits,google_news_rss_hits,google_trend_hits,ai_corpus_hits,ebay_discovery_hits,source_signal_count")
+          .order("updated_at", { ascending: false })
+          .limit(1000),
+        supabase
+          .from("comp_checks")
+          .select("signal_id,trend_name,checked_at,sample_size")
+          .order("checked_at", { ascending: false })
+          .limit(500),
+      ]);
 
-    setJobs((jobsRes.data || []) as CollectorJobRow[]);
-    setSignals((signalsRes.data || []) as SignalRow[]);
-    setCompChecks((compsRes.data || []) as CompCheckRow[]);
-    const errors = [jobsRes.error?.message, signalsRes.error?.message, compsRes.error?.message].filter(Boolean) as string[];
-    setReadErrors(errors);
-    setLoading(false);
+      setJobs((jobsRes.data || []) as CollectorJobRow[]);
+      setSignals((signalsRes.data || []) as SignalRow[]);
+      setCompChecks((compsRes.data || []) as CompCheckRow[]);
+      const errors = [jobsRes.error?.message, signalsRes.error?.message, compsRes.error?.message].filter(Boolean) as string[];
+      setReadErrors(errors);
+    } catch (err) {
+      setReadErrors([String((err as Error)?.message || "source_health_load_failed")]);
+    } finally {
+      if (silent) setRefreshing(false);
+      else setLoading(false);
+      requestInFlightRef.current = false;
+    }
   }, []);
 
   useEffect(() => {
@@ -189,6 +202,15 @@ export default function SubredditFilter() {
       void loadSourceHealth();
     }, 0);
     return () => clearTimeout(timer);
+  }, [loadSourceHealth]);
+
+  useEffect(() => {
+    const pollMs = 60000;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void loadSourceHealth({ silent: true });
+    }, pollMs);
+    return () => window.clearInterval(intervalId);
   }, [loadSourceHealth]);
 
   const latestBySource = useMemo(() => {
@@ -377,11 +399,11 @@ export default function SubredditFilter() {
             </p>
           </div>
           <button
-            onClick={loadSourceHealth}
+            onClick={() => void loadSourceHealth()}
             className="px-4 py-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:border-emerald-500/40 transition-colors flex items-center gap-2"
           >
-            <RefreshCw size={14} />
-            Refresh
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </div>
