@@ -10,10 +10,22 @@ export default function SectionLedgerSidebar({ objectives, onRemove, onClear, on
           <h3 className="text-3xl font-black italic dark:text-white uppercase leading-none tracking-tighter">Mission Hub</h3>
         </div>
         <div className="flex space-x-2">
-           <button onClick={onClear} className="p-3 bg-slate-200 dark:bg-white/5 rounded-xl text-slate-400 hover:text-red-500 transition-all group shadow-inner">
+           <button
+             type="button"
+             onClick={onClear}
+             title="Clear all objectives"
+             aria-label="Clear all objectives"
+             className="p-3 bg-slate-200 dark:bg-white/5 rounded-xl text-slate-400 hover:text-red-500 transition-all group shadow-inner"
+           >
               <Eraser size={20} className="group-hover:rotate-12 transition-transform" />
            </button>
-           <button onClick={onClose} className="p-3 bg-emerald-500 text-black rounded-xl shadow-lg hover:scale-105 transition-all">
+           <button
+             type="button"
+             onClick={onClose}
+             title="Close mission hub sidebar"
+             aria-label="Close mission hub sidebar"
+             className="p-3 bg-emerald-500 text-black rounded-xl shadow-lg hover:scale-105 transition-all"
+           >
               <PanelRightClose size={20} />
            </button>
         </div>
@@ -23,8 +35,24 @@ export default function SectionLedgerSidebar({ objectives, onRemove, onClear, on
         {objectives.map((obj: any) => (
           <div key={obj.id} className="relative group p-6 rounded-[2.5rem] bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 shadow-xl transition-all hover:border-emerald-500/50">
             <div className="absolute top-6 right-6 flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-all">
-               <button className="p-2 text-slate-400 hover:text-blue-500 transition-colors"><Edit3 size={14} /></button>
-               <button onClick={() => onRemove(obj.id)} className="p-2 text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+               <button
+                 type="button"
+                 disabled
+                 title="Edit objective (coming soon)"
+                 aria-label="Edit objective (coming soon)"
+                 className="p-2 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+               >
+                 <Edit3 size={14} />
+               </button>
+               <button
+                 type="button"
+                 onClick={() => onRemove(obj.id)}
+                 title={`Remove objective ${obj.title}`}
+                 aria-label={`Remove objective ${obj.title}`}
+                 className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+               >
+                 <Trash2 size={14} />
+               </button>
             </div>
             
             <div className="flex items-center space-x-4 mb-6">
