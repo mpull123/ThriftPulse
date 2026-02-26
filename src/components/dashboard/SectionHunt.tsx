@@ -846,13 +846,14 @@ export default function SectionHunt({
         <div className="hidden md:flex items-center gap-4">
           <button
             onClick={() => setShowTopOnly(!showTopOnly)}
+            title={showTopOnly ? "Show all detected stores" : "Show only the top-ranked stores"}
             className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${
               showTopOnly
                 ? "bg-emerald-500 text-slate-900 border-emerald-500"
                 : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"
             }`}
           >
-            {showTopOnly ? "Top Stores Filter: On" : "Top Stores Filter: Off"}
+            {showTopOnly ? "Top 3 Stores: On" : "Top 3 Stores: Off"}
           </button>
           <div className="text-right">
             <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Target Items</p>
@@ -921,9 +922,10 @@ export default function SectionHunt({
                         </div>
                         <button
                           onClick={() => onConfirmFound && onConfirmFound(item, selectedStore.name)}
+                          title={`Mark ${item.name} as found at ${selectedStore.name}`}
                           className="px-3 py-1.5 bg-emerald-500 text-slate-900 text-[9px] font-black uppercase rounded-lg hover:bg-emerald-400 transition-colors"
                         >
-                          Confirm
+                          Mark Found
                         </button>
                       </div>
                     ))}
@@ -940,7 +942,7 @@ export default function SectionHunt({
                   rel="noopener noreferrer"
                   className="w-full mt-8 py-4 bg-emerald-500 text-slate-900 rounded-xl font-black uppercase italic text-xs tracking-widest hover:bg-emerald-400 transition-all shadow-lg flex items-center justify-center gap-2"
                 >
-                  <Navigation size={16} /> Navigate Now
+                  <Navigation size={16} /> Open Directions
                 </a>
               </div>
             </div>
@@ -1021,9 +1023,10 @@ export default function SectionHunt({
               <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
               <button
                 type="submit"
+                title="Search stores for this city, zip, or store name"
                 className="absolute right-2 top-2 bottom-2 px-4 bg-emerald-500 text-slate-900 rounded-xl font-black text-[10px] uppercase hover:bg-emerald-400 transition-colors"
               >
-                {searching ? "Scanning..." : "Scan"}
+                {searching ? "Searching..." : "Search"}
               </button>
             </form>
             <div className="mt-2 flex items-center gap-2">
@@ -1070,6 +1073,8 @@ export default function SectionHunt({
           <div className="absolute top-24 left-6 flex flex-col gap-2 z-20">
             <button
               onClick={() => setMapZoom((z) => clamp(z + 1, 8, 16))}
+              type="button"
+              aria-label="Zoom in on store map"
               className="h-10 w-10 bg-white dark:bg-slate-900 rounded-xl shadow-lg flex items-center justify-center hover:bg-emerald-500 hover:text-white transition-colors"
               title="Zoom in"
             >
@@ -1077,6 +1082,8 @@ export default function SectionHunt({
             </button>
             <button
               onClick={() => setMapZoom((z) => clamp(z - 1, 8, 16))}
+              type="button"
+              aria-label="Zoom out on store map"
               className="h-10 w-10 bg-white dark:bg-slate-900 rounded-xl shadow-lg flex items-center justify-center hover:bg-emerald-500 hover:text-white transition-colors"
               title="Zoom out"
             >
