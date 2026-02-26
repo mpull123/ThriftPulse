@@ -2231,7 +2231,7 @@ export default function SectionScout({
           <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
           <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
           <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
-          <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Presets</button>
+          <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Decision Lab Presets</button>
         </div>
       </section>
 
@@ -2239,7 +2239,7 @@ export default function SectionScout({
         <section className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex items-center justify-between mb-4">
             <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Decision Lab Preset Manager</h5>
-            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close</button>
+            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close Presets</button>
           </div>
           <div className="flex gap-2 mb-4">
             <input
@@ -2262,7 +2262,7 @@ export default function SectionScout({
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => applyNamedPreset(preset)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">Apply</button>
-                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Default</button>
+                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Set Default</button>
                   <button onClick={() => deleteNamedPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Delete</button>
                 </div>
               </div>
@@ -2285,7 +2285,7 @@ export default function SectionScout({
                 <option value="risk">Risk</option>
                 <option value="velocity">Velocity</option>
               </select>
-              <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear</button>
+              <button onClick={() => setCompareIds([])} className="text-[10px] font-black uppercase text-rose-500">Clear Compare</button>
             </div>
           </div>
           {recommendation && <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-blue-600">{recommendation}</p>}

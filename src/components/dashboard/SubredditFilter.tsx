@@ -400,10 +400,12 @@ export default function SubredditFilter() {
           </div>
           <button
             onClick={() => void loadSourceHealth()}
+            title="Refresh source health and coverage metrics"
+            aria-label="Refresh source health and coverage metrics"
             className="px-4 py-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:border-emerald-500/40 transition-colors flex items-center gap-2"
           >
             <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-            {refreshing ? "Refreshing..." : "Refresh"}
+            {refreshing ? "Refreshing Sources..." : "Refresh Sources"}
           </button>
         </div>
       </div>

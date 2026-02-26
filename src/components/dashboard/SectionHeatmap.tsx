@@ -903,7 +903,7 @@ export default function SectionHeatmap({
             onClick={() => setSortMode("mentions")}
             className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${sortMode === "mentions" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
           >
-            Mentions
+            Sort: Mentions
           </button>
           <select
             value={viewMode}
@@ -937,13 +937,13 @@ export default function SectionHeatmap({
             onClick={() => setFreshOnly(!freshOnly)}
             className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${freshOnly ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
           >
-            Fresh Comps
+            {freshOnly ? "Fresh Comps Only: On" : "Fresh Comps Only: Off"}
           </button>
           <button
             onClick={() => setLowBuyInOnly(!lowBuyInOnly)}
             className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${lowBuyInOnly ? "bg-blue-500/10 text-blue-500 border-blue-500/40" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700"}`}
           >
-            Low Buy-In
+            {lowBuyInOnly ? "Low Buy-In Only: On" : "Low Buy-In Only: Off"}
           </button>
           <button
             onClick={() => setHideSimilarCards((prev) => !prev)}
@@ -959,7 +959,7 @@ export default function SectionHeatmap({
         </div>
       </div>
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-        Showing {visibleData.length} of {displayData.length} cards • Selected: {compareIds.length}/4
+        Showing {visibleData.length} of {displayData.length} cards • Compare Selected: {compareIds.length}/4
         {hideSimilarCards && hiddenSimilarCount > 0 ? ` • Hidden similar: ${hiddenSimilarCount}` : ""}
       </p>
       <div className="flex flex-wrap gap-2">
@@ -992,14 +992,14 @@ export default function SectionHeatmap({
         <button onClick={() => applyPreset("quick_flips")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-amber-500/10 text-amber-600">Quick Flips</button>
         <button onClick={() => applyPreset("vintage")} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-purple-500/10 text-purple-500">Vintage</button>
         <button onClick={saveCurrentPreset} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-900 text-white dark:bg-white dark:text-slate-900">Save Current Preset</button>
-        <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Presets</button>
+        <button onClick={() => setShowPresetManager(true)} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200">Manage Radar Presets</button>
       </div>
 
       {showPresetManager && (
         <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex items-center justify-between mb-4">
             <h5 className="text-xs font-black uppercase tracking-widest text-slate-500">Radar Preset Manager</h5>
-            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close</button>
+            <button onClick={() => setShowPresetManager(false)} className="text-[10px] font-black uppercase text-rose-500">Close Presets</button>
           </div>
           <div className="flex gap-2 mb-4">
             <input
@@ -1020,7 +1020,7 @@ export default function SectionHeatmap({
                 </p>
                 <div className="flex gap-2">
                   <button onClick={() => applyNamedPreset(preset)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600">Apply</button>
-                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Default</button>
+                  <button onClick={() => setDefaultPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-blue-500/10 text-blue-500">Set Default</button>
                   <button onClick={() => deleteNamedPreset(preset.id)} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-rose-500/10 text-rose-500">Delete</button>
                 </div>
               </div>
@@ -1070,7 +1070,7 @@ export default function SectionHeatmap({
                 }}
                 className="text-[10px] font-black uppercase text-rose-500"
               >
-                Clear
+                Clear Compare
               </button>
             </div>
           </div>

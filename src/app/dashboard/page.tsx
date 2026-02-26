@@ -87,7 +87,7 @@ function logSchemaHealth(
 }
 
 export default function DashboardPage() {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, resolvedTheme } = useTheme();
   
   // --- HYDRATION FIX ---
   const [mounted, setMounted] = useState(false);
@@ -468,8 +468,13 @@ export default function DashboardPage() {
             <h1 className="text-xl font-black italic uppercase tracking-tighter">ThriftPulse</h1>
         </div>
         
-        <button onClick={() => setIsDemoMode(!isDemoMode)} className={`w-full flex items-center justify-between p-4 mb-8 rounded-2xl border transition-all ${isDemoMode ? 'bg-amber-500/10 border-amber-500 text-amber-600' : 'bg-emerald-500/10 border-emerald-500 text-emerald-600'}`}>
-            <span className="text-[10px] font-black uppercase tracking-widest">{isDemoMode ? "DEMO ACTIVE" : "LIVE DATA"}</span>
+        <button
+          onClick={() => setIsDemoMode(!isDemoMode)}
+          title={isDemoMode ? "Switch to live data mode" : "Switch to demo data mode"}
+          aria-label={isDemoMode ? "Switch to live data mode" : "Switch to demo data mode"}
+          className={`w-full flex items-center justify-between p-4 mb-8 rounded-2xl border transition-all ${isDemoMode ? 'bg-amber-500/10 border-amber-500 text-amber-600' : 'bg-emerald-500/10 border-emerald-500 text-emerald-600'}`}
+        >
+            <span className="text-[10px] font-black uppercase tracking-widest">{isDemoMode ? "Data Mode: Demo" : "Data Mode: Live"}</span>
             <div className={`h-4 w-8 rounded-full relative ${isDemoMode ? 'bg-amber-500' : 'bg-emerald-500'}`}>
                 <div className={`absolute top-1 h-2 w-2 bg-white rounded-full transition-all ${isDemoMode ? 'left-1' : 'left-5'}`} />
             </div>
@@ -487,9 +492,9 @@ export default function DashboardPage() {
 
         <div className="pt-8 mt-auto border-t dark:border-slate-800 space-y-4">
            <div className="flex items-center justify-center p-2 bg-slate-100 dark:bg-slate-800 rounded-2xl space-x-2 border dark:border-slate-700">
-              <ThemeIcon icon={Sun} active={theme === 'light'} onClick={() => setTheme('light')} />
-              <ThemeIcon icon={Moon} active={theme === 'dark'} onClick={() => setTheme('dark')} />
-              <ThemeIcon icon={Monitor} active={theme === 'system'} onClick={() => setTheme('system')} />
+              <ThemeIcon icon={Sun} label="Light mode" active={theme === 'light'} onClick={() => setTheme('light')} />
+              <ThemeIcon icon={Moon} label="Dark mode" active={theme === 'dark'} onClick={() => setTheme('dark')} />
+              <ThemeIcon icon={Monitor} label={`System mode${theme === 'system' ? ` (${resolvedTheme || 'auto'})` : ''}`} active={theme === 'system'} onClick={() => setTheme('system')} />
            </div>
            <Link href="/" className="flex items-center space-x-3 p-4 text-slate-500 hover:text-red-500 font-bold text-sm transition-all"><LogOut size={20} /><span>Exit Hub</span></Link>
         </div>
@@ -652,7 +657,7 @@ export default function DashboardPage() {
             <div className="max-h-[88vh] overflow-y-auto p-8 [scrollbar-gutter:stable]">
             <div className="sticky top-0 z-10 -mx-8 -mt-8 mb-6 px-8 py-4 bg-white/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200/80 dark:border-slate-800/80">
               <button onClick={() => setSelectedNode(null)} className="flex items-center text-xs font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors">
-                <X size={16} className="mr-2" /> Close
+                <X size={16} className="mr-2" /> Close Details
               </button>
             </div>
             
@@ -880,6 +885,7 @@ export default function DashboardPage() {
       <aside className={`${isTrunkCollapsed ? "w-16" : "w-96"} h-full bg-white/75 dark:bg-slate-950/80 backdrop-blur-xl border-l border-white/70 dark:border-slate-700/70 flex flex-col z-40 relative transition-all duration-200`}>
         <button
           onClick={() => setIsTrunkCollapsed((v) => !v)}
+          aria-label={isTrunkCollapsed ? "Expand sourcing trunk panel" : "Collapse sourcing trunk panel"}
           className="absolute -left-3 top-6 h-7 w-7 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex items-center justify-center z-50 shadow"
           title={isTrunkCollapsed ? "Expand Sourcing Trunk" : "Collapse Sourcing Trunk"}
         >
@@ -901,7 +907,7 @@ export default function DashboardPage() {
               <div className="mt-3 flex gap-2">
                 <button onClick={() => openViewWithFocus("scout")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Decision Lab</button>
                 <button onClick={() => openViewWithFocus("analysis")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase">Radar</button>
-                <button onClick={() => setCrossPageFocus("")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase text-rose-500">Clear</button>
+                <button onClick={() => setCrossPageFocus("")} className="px-2 py-1 rounded-lg bg-white/80 dark:bg-slate-900 text-[9px] font-black uppercase text-rose-500">Clear Focus</button>
               </div>
             </div>
           )}
@@ -909,7 +915,7 @@ export default function DashboardPage() {
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 italic flex items-center gap-2">
               <Briefcase size={14} /> Sourcing Trunk (Confirmation Panel)
             </h3>
-            {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear All</button>}
+            {trunk.length > 0 && <button onClick={clearTrunk} className="text-[10px] font-black uppercase text-red-500 hover:underline">Clear Trunk</button>}
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-4">
@@ -921,7 +927,14 @@ export default function DashboardPage() {
             ) : (
               trunk.map((item) => (
                 <div key={item.id} className="p-6 bg-white dark:bg-slate-900 rounded-[2rem] border dark:border-slate-800 shadow-sm relative group animate-in slide-in-from-right">
-                  <button onClick={() => removeFromTrunk(item.id)} className="absolute top-5 right-5 text-slate-300 hover:text-red-500 transition-colors"><X size={14} /></button>
+                  <button
+                    onClick={() => removeFromTrunk(item.id)}
+                    title={`Remove ${item.name} from sourcing trunk`}
+                    aria-label={`Remove ${item.name} from sourcing trunk`}
+                    className="absolute top-5 right-5 text-slate-300 hover:text-red-500 transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
                   
                   <h4 className="text-xl font-black italic uppercase tracking-tighter dark:text-white leading-none mb-3 pr-6">{item.name}</h4>
                   
@@ -963,7 +976,7 @@ export default function DashboardPage() {
           </div>
 
           {trunk.length > 0 && (
-            <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Generate Route ({trunk.length})</button>
+            <button onClick={() => setActiveView("hunt")} className="w-full mt-8 py-5 bg-emerald-500 text-slate-900 font-black uppercase italic text-xs tracking-widest rounded-2xl shadow-xl hover:scale-[1.02] transition-all">Open Store Map Route ({trunk.length})</button>
           )}
         </div>
         )}
@@ -985,8 +998,16 @@ function NavButton({ label, id, icon: Icon, active, set, color }: any) {
   );
 }
 
-function ThemeIcon({ icon: Icon, active, onClick }: any) {
+function ThemeIcon({ icon: Icon, label, active, onClick }: any) {
   return (
-    <button onClick={onClick} className={`p-2.5 rounded-xl transition-all ${active ? 'bg-white dark:bg-slate-700 text-emerald-500 shadow-md border border-slate-200 dark:border-slate-600' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'}`}><Icon size={18} /></button>
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className={`p-2.5 rounded-xl transition-all ${active ? 'bg-white dark:bg-slate-700 text-emerald-500 shadow-md border border-slate-200 dark:border-slate-600' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'}`}
+    >
+      <Icon size={18} />
+    </button>
   );
 }
